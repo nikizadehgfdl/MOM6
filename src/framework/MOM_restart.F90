@@ -1254,7 +1254,7 @@ function open_restart_units(filename, directory, G, CS, units, file_paths, &
   integer :: n, m, err, length
 
 
-  logical :: fexists
+  logical :: fexists, uncombfexists
   character(len=32) :: filename_appendix = '' !fms appendix to filename for ensemble runs
   character(len=80) :: restartname
 
@@ -1304,6 +1304,12 @@ function open_restart_units(filename, directory, G, CS, units, file_paths, &
         num_restart = num_restart + 1
         inquire(file=filepath, exist=fexists)
         if (fexists) then
+          !Combined restart was found, error out if uncombined files exist too
+          inquire(file=trim(filepath)//".0000", exist=uncombfexists)
+          if(uncombfexists) then
+             call MOM_error(FATAL, "MOM_restart : open_restart_units: "//&
+                  "Both combined and disrtibuted restart files were found for "//trim(filepath)) 
+          endif
           if (present(units)) &
             call open_file(units(n), trim(filepath), READONLY_FILE, NETCDF_FILE, &
                            threading = MULTIPLE, fileset = SINGLE_FILE)
