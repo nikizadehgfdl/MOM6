@@ -200,6 +200,22 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, CS, &
   logical :: DoStokesMixing
 
   integer :: i, j, k, is, ie, Isq, Ieq, Jsq, Jeq, nz, n
+!---------------------------------------------------------------------------
+!---The following block causes models to crash when compiled with Intel16 -O3
+!----------------------------------------------------------------------------
+  logical :: totallyFalse = .false.
+  if (totallyFalse) then
+    do k=1,nz ; do j=G%jsc,G%jec ; do i=G%isc,G%iec
+       u(i,j,k) = u(i,j,k) + 0.0 
+    enddo ; enddo ; enddo
+  endif
+  if (totallyFalse) then
+    do k=1,nz ; do j=G%jsc,G%jec ; do i=G%isc,G%iec
+       v(i,j,k) = v(i,j,k) + 0.0
+    enddo ; enddo ; enddo
+  endif
+!---------------------------------------------------------------------------
+
   is = G%isc ; ie = G%iec
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB ; nz = G%ke
 
@@ -216,6 +232,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, CS, &
   h_neglect = GV%H_subroundoff
   Idt = 1.0 / dt
 
+
+ 
+  
   !Check if Stokes mixing allowed if requested (present and associated)
   DoStokesMixing=.false.
   if (CS%StokesMixing) then
