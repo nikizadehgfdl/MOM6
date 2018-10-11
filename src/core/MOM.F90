@@ -266,6 +266,7 @@ type, public :: MOM_control_struct
   real    :: bad_val_sst_max         !< Maximum SST before triggering bad value message
   real    :: bad_val_sst_min         !< Minimum SST before triggering bad value message
   real    :: bad_val_sss_max         !< Maximum SSS before triggering bad value message
+  real    :: bad_val_sss_min         !< Minimum SSS before triggering bad value message
   real    :: bad_val_column_thickness!< Minimum column thickness before triggering bad value message
 
   real, pointer, dimension(:,:) :: &
@@ -1750,6 +1751,10 @@ subroutine initialize_MOM(Time, param_file, dirs, CS, Time_in, offline_tracer_mo
                  "The value of SSH above which a bad value message is \n"//&
                  "triggered, if CHECK_BAD_SURFACE_VALS is true.", units="m", &
                  default=20.0)
+    call get_param(param_file, "MOM", "BAD_VAL_SSS_MIN", CS%bad_val_sss_min, &
+                 "The value of SSS below which a bad value message is \n"//&
+                 "triggered, if CHECK_BAD_SURFACE_VALS is true.", units="PPT", &
+                 default=-1.0e-10)
     call get_param(param_file, "MOM", "BAD_VAL_SSS_MAX", CS%bad_val_sss_max, &
                  "The value of SSS above which a bad value message is \n"//&
                  "triggered, if CHECK_BAD_SURFACE_VALS is true.", units="PPT", &
@@ -3743,7 +3748,7 @@ subroutine calculate_surface_state(sfc_state, u, v, h, ssh, G, GV, CS)
                 .or. sfc_state%sea_lev(i,j)<=-CS%bad_val_ssh_max  &
                 .or. sfc_state%sea_lev(i,j)+G%bathyT(i,j) < CS%bad_val_column_thickness
         if (CS%use_temperature) localError = localError &
-                .or. sfc_state%SSS(i,j)<0.                        &
+                .or. sfc_state%SSS(i,j)<CS%bad_val_sss_min        &
                 .or. sfc_state%SSS(i,j)>=CS%bad_val_sss_max       &
                 .or. sfc_state%SST(i,j)< CS%bad_val_sst_min       &
                 .or. sfc_state%SST(i,j)>=CS%bad_val_sst_max
