@@ -511,44 +511,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     enddo ; enddo
 
     ! Update the tracer concentration from divergence of neutral diffusive flux components
-    call cpu_time(t1) 
-    do j = G%jsc,G%jec ; do i = G%isc,G%iec
-      if (G%mask2dT(i,j)>0.) then
-
-        dTracer(:) = 0.
-        do ks = 1,CS%nsurf-1
-          k = CS%uKoL(I,j,ks)
-          dTracer(k) = dTracer(k) + Coef_x(I,j)   * uFlx(I,j,ks)
-          k = CS%uKoR(I-1,j,ks)
-          dTracer(k) = dTracer(k) - Coef_x(I-1,j) * uFlx(I-1,j,ks)
-          k = CS%vKoL(i,J,ks)
-          dTracer(k) = dTracer(k) + Coef_y(i,J)   * vFlx(i,J,ks)
-          k = CS%vKoR(i,J-1,ks)
-          dTracer(k) = dTracer(k) - Coef_y(i,J-1) * vFlx(i,J-1,ks)
-        enddo
-        do k = 1, GV%ke
-          tracer%t(i,j,k) = tracer%t(i,j,k) + dTracer(k) * &
-                          ( G%IareaT(i,j) / ( h(i,j,k) + GV%H_subroundoff ) )
-        enddo
-
-        if (tracer%id_dfxy_conc > 0  .or. tracer%id_dfxy_cont > 0 .or. tracer%id_dfxy_cont_2d > 0 ) then
-          do k = 1, GV%ke
-            tendency(i,j,k) = dTracer(k) * G%IareaT(i,j) * Idt
-          enddo
-        endif
-
-      endif
-    enddo ; enddo
-    call cpu_time(t2) 
-
-    dsum1=0.0;dsum2=0.0
-    do j = G%jsc,G%jec;do i = G%isc,G%iec;do k = 1, GV%ke
-       dsum1=dsum1+tracer%t(i,j,k)
-       dsum2=dsum2+tendency(i,j,k)
-    enddo;enddo;enddo
-    print*,'cpu      ',dsum1,dsum2, t2-t1
-    
-    !Here I try to make the above calculation with openACC on GPU (using pgi compiler)
     CS_id = tracer%id_dfxy_conc > 0  .or. tracer%id_dfxy_cont > 0 .or. tracer%id_dfxy_cont_2d > 0
     !PGI does not let me use the member arrays of the following structures directrly and I get 
     !runtime errors (Invalid device address) if I try to do so. Hence I am making copies of them.
@@ -560,7 +522,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     G_mask2dT=G%mask2dT
     G_IareaT =G%IareaT
     tracer_t =tracer%t
-    call cpu_time(t1)
     !$ACC data copyin(tracer_t,tendency,h,Coef_x,uFlx,Coef_y,vFlx, &
     !$ACC&            CS_uKoL,CS_vKoL,CS_uKoR,CS_vKoR,G_mask2dT,G_IareaT)&
     !$ACC&     present_or_copyin(G_mask2dT,G_IareaT)&
@@ -596,14 +557,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     enddo
     !$ACC update self(tracer_t,tendency)
     !$ACC end data
-    call cpu_time(t2) 
 
-    dsum1=0.0;dsum2=0.0
-    do j = G%jsc,G%jec;do i = G%isc,G%iec;do k = 1, GV%ke
-       dsum1=dsum1+tracer_t(i,j,k)
-       dsum2=dsum2+tendency(i,j,k)
-    enddo;enddo;enddo
-    print*,'gpu      ',dsum1,dsum2, t2-t1
     ! Diagnose vertically summed zonal flux, giving zonal tracer transport from ndiff.
     ! Note sign corresponds to downgradient flux convention.
     if (tracer%id_dfx_2d > 0) then
