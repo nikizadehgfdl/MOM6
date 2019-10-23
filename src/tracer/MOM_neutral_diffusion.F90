@@ -456,6 +456,15 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   integer :: i, j, k, m, ks, nk
   real :: Idt
   real :: h_neglect, h_neglect_edge
+  logical :: CS_id
+  integer :: cs_nsurf
+  real :: t1,t2, dsum1,dsum2
+  real, dimension(SZIB_(G),SZJ_(G),CS%nsurf) :: CS_uKoL
+  real, dimension(SZIB_(G),SZJ_(G),CS%nsurf) :: CS_uKoR
+  real, dimension(SZI_(G),SZJB_(G),CS%nsurf) :: CS_vKoL
+  real, dimension(SZI_(G),SZJB_(G),CS%nsurf) :: CS_vKoR
+  real, dimension(SZI_(G),SZJ_(G)) :: G_mask2dT,G_IareaT
+  real, dimension(SZI_(G),SZJ_(G),G%ke)      :: dTracer3d,tracer_t
 
   !### Try replacing both of these with GV%H_subroundoff
   h_neglect_edge = GV%m_to_H*1.0e-10
@@ -502,6 +511,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     enddo ; enddo
 
     ! Update the tracer concentration from divergence of neutral diffusive flux components
+    call cpu_time(t1) 
     do j = G%jsc,G%jec ; do i = G%isc,G%iec
       if (G%mask2dT(i,j)>0.) then
 
@@ -529,7 +539,68 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
 
       endif
     enddo ; enddo
+    call cpu_time(t2) 
 
+  dsum1=0.0;dsum2=0.0
+  do j = G%jsc,G%jec;do i = G%isc,G%iec;do k = 1, GV%ke
+    dsum1=dsum1+tracer%t(i,j,k)
+    dsum2=dsum2+tendency(i,j,k)
+  enddo;enddo;enddo
+  print*,'cpu      ',dsum1,dsum2, t2-t1
+
+  CS_id = tracer%id_dfxy_conc > 0  .or. tracer%id_dfxy_cont > 0 .or. tracer%id_dfxy_cont_2d > 0
+  CS_nsurf=CS%nsurf
+  CS_uKoL =CS%uKoL
+  CS_vKoL =CS%vKoL
+  CS_uKoR =CS%uKoR
+  CS_vKoR =CS%vKoR
+  G_mask2dT=G%mask2dT
+  G_IareaT =G%IareaT
+  tracer_t =tracer%t
+  call cpu_time(t1)
+  !$ACC data copyin(tracer_t,tendency,h,Coef_x,uFlx,Coef_y,vFlx, &
+  !$ACC&            CS_uKoL,CS_vKoL,CS_uKoR,CS_vKoR,G_mask2dT,G_IareaT)&
+  !$ACC&     present_or_copyin(G_mask2dT,G_IareaT)&
+  !$ACC&     present_or_create(dTracer3d)
+  !$ACC parallel loop
+  do j = G%jsc,G%jec 
+     !$ACC loop
+     do i = G%isc,G%iec
+      if (G_mask2dT(i,j)>0.) then
+       dTracer3d(i,j,:) = 0.
+       !$ACC loop
+       do ks = 1,CS_nsurf-1
+         k=CS_uKoL(I,j,ks)
+         dTracer3d(i,j,k) = dTracer3d(i,j,k) + Coef_x(I,j)  * uFlx(I,j,ks)
+         k = CS_uKoR(I-1,j,ks)
+         dTracer3d(i,j,k) = dTracer3d(i,j,k) - Coef_x(I-1,j) * uFlx(I-1,j,ks)
+         k = CS_vKoL(i,J,ks)
+         dTracer3d(i,j,k) = dTracer3d(i,j,k) + Coef_y(i,J)   * vFlx(i,J,ks)
+         k = CS_vKoR(i,J-1,ks)
+         dTracer3d(i,j,k) = dTracer3d(i,j,k) - Coef_y(i,J-1) * vFlx(i,J-1,ks)
+       enddo
+       do k = 1, GV%ke
+         tracer_t(i,j,k) = tracer_t(i,j,k) + dTracer3d(i,j,k) * &
+                        ( G_IareaT(i,j) / ( h(i,j,k) + GV%H_subroundoff ) )
+       enddo
+       if(CS_id) then
+          do k = 1, GV%ke
+            tendency(i,j,k) = dTracer3d(i,j,k) * G_IareaT(i,j) * Idt
+          enddo
+       endif
+      endif
+     enddo 
+  enddo 
+  !$ACC update self(tracer_t,tendency)
+  !$ACC end data
+  call cpu_time(t2) 
+
+  dsum1=0.0;dsum2=0.0
+  do j = G%jsc,G%jec;do i = G%isc,G%iec;do k = 1, GV%ke
+    dsum1=dsum1+tracer_t(i,j,k)
+    dsum2=dsum2+tendency(i,j,k)
+  enddo;enddo;enddo
+  print*,'gpu      ',dsum1,dsum2, t2-t1
     ! Diagnose vertically summed zonal flux, giving zonal tracer transport from ndiff.
     ! Note sign corresponds to downgradient flux convention.
     if (tracer%id_dfx_2d > 0) then
