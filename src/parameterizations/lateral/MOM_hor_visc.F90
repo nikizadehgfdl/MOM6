@@ -356,6 +356,9 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
   integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
   integer :: i, j, k, n
   real :: inv_PI3, inv_PI2, inv_PI5
+  real,dimension(G%isd:G%ied,G%jsd:G%jed) :: CS_DY_dxT,CS_DX_dyT
+  real,dimension(G%isdB:G%iedB,G%jsdB:G%jedB) :: CS_DY_dxBu,CS_DX_dyBu
+
   is  = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = G%ke
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
 
@@ -505,6 +508,19 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
     enddo ; enddo
 
   endif ! use_GME
+ 
+  !Niki: I cannot copyin CS% via openacc to the GPU device, I get cuda errors:
+  !        call to cuMemcpyDtoHAsync returned error 716: Misaligned address
+  !        call to cuMemFreeHost returned error 716: Misaligned address
+  !      So, I make copies of the needed member arrays and copy/use them instead.
+  CS_DY_dxT(:,:)=CS%DY_dxT(:,:)
+  CS_DX_dyT(:,:)=CS%DX_dyT(:,:)
+  CS_DY_dxBu(:,:)=CS%DY_dxBu(:,:)
+  CS_DX_dyBu(:,:)=CS%DX_dyBu(:,:)
+  !$ACC  data copyin(u,v)&
+  !$ACC&      present_or_copyin(CS_DY_dxT,CS_DX_dyT,CS_DY_dxT,CS_DY_dxBu,CS_DX_dyBu)&
+  !$ACC&      present_or_copyin(G,G%IdyCu,G%IdyCv,G%IdxCu,G%IdxCv, boundary_mask)&
+  !$ACC&      present_or_create(sh_xx,dudx,dvdy,dvdx,dudy, grad_vel_mag_h)
 
   !$OMP parallel do default(none) &
   !$OMP shared( &
@@ -539,21 +555,30 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
     ! The following are the forms of the horizontal tension and horizontal
     ! shearing strain advocated by Smagorinsky (1993) and discussed in
     ! Griffies and Hallberg (2000).
-
     ! Calculate horizontal tension
-    do j=Jsq-1,Jeq+2 ; do i=Isq-1,Ieq+2
-      dudx(i,j) = CS%DY_dxT(i,j)*(G%IdyCu(I,j) * u(I,j,k) - &
+    !$ACC parallel loop present(G)
+    do j=Jsq-1,Jeq+2 
+      !$ACC loop
+      do i=Isq-1,Ieq+2
+      dudx(i,j) = CS_DY_dxT(i,j)*(G%IdyCu(I,j) * u(I,j,k) - &
                                   G%IdyCu(I-1,j) * u(I-1,j,k))
-      dvdy(i,j) = CS%DX_dyT(i,j)*(G%IdxCv(i,J) * v(i,J,k) - &
+      dvdy(i,j) = CS_DX_dyT(i,j)*(G%IdxCv(i,J) * v(i,J,k) - &
                                   G%IdxCv(i,J-1) * v(i,J-1,k))
       sh_xx(i,j) = dudx(i,j) - dvdy(i,j)
-    enddo ; enddo
-
+      enddo 
+    enddo
     ! Components for the shearing strain
-    do J=js-2,Jeq+1 ; do I=is-2,Ieq+1
-      dvdx(I,J) = CS%DY_dxBu(I,J)*(v(i+1,J,k)*G%IdyCv(i+1,J) - v(i,J,k)*G%IdyCv(i,J))
-      dudy(I,J) = CS%DX_dyBu(I,J)*(u(I,j+1,k)*G%IdxCu(I,j+1) - u(I,j,k)*G%IdxCu(I,j))
-    enddo ; enddo
+    !$ACC parallel loop present(G)
+    do J=js-2,Jeq+1 
+      !$ACC loop
+      do I=is-2,Ieq+1
+      dvdx(I,J) = CS_DY_dxBu(I,J)*(v(i+1,J,k)*G%IdyCv(i+1,J) - v(i,J,k)*G%IdyCv(i,J))
+      dudy(I,J) = CS_DX_dyBu(I,J)*(u(I,j+1,k)*G%IdxCu(I,j+1) - u(I,j,k)*G%IdxCu(I,j))
+      enddo  
+    enddo
+    !Niki: Now the challenge is to get rid of the following self update. 
+    !      But that means to delegate more loops to ACC on the device.
+    !$ACC update self(dvdx,dudy,sh_xx)
 
     ! Interpolate the thicknesses to velocity points.
     ! The extra wide halos are to accommodate the cross-corner-point projections
@@ -1166,12 +1191,14 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
       !  endif
 
         if (CS%answers_2018) then
+          !$ACC parallel loop
           do j=js,je ; do i=is,ie
             grad_vel_mag_h(i,j) = boundary_mask(i,j) * (dudx(i,j)**2 + dvdy(i,j)**2 + &
                (0.25*(dvdx(I,J)+dvdx(I-1,J)+dvdx(I,J-1)+dvdx(I-1,J-1)) )**2 + &
                (0.25*(dudy(I,J)+dudy(I-1,J)+dudy(I,J-1)+dudy(I-1,J-1)) )**2)
           enddo ; enddo
         else
+          !$ACC parallel loop
           do j=js,je ; do i=is,ie
             grad_vel_mag_h(i,j) = boundary_mask(i,j) * ((dudx(i,j)**2 + dvdy(i,j)**2) + &
                ((0.25*((dvdx(I,J) + dvdx(I-1,J-1)) + (dvdx(I-1,J) + dvdx(I,J-1))) )**2 + &
@@ -1179,6 +1206,7 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
           enddo ; enddo
         endif
       else
+        !$ACC parallel loop
         do j=js,je ; do i=is,ie
           grad_vel_mag_h(i,j) = 0.0
         enddo ; enddo
@@ -1195,6 +1223,8 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
           grad_d2vel_mag_h(i,j) = 0.0
         enddo ; enddo
       endif
+
+      !$ACC update self(grad_vel_mag_h)
 
       do j=js,je ; do i=is,ie
         ! Diagnose  -Kh * |del u|^2 - Ah * |del^2 u|^2
@@ -1443,6 +1473,7 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, US, 
     endif ; endif ! find_FrictWork and associated(mom_src)
 
   enddo ! end of k loop
+    !$ACC end data
 
   ! Offer fields for diagnostic averaging.
   if (CS%id_diffu>0)     call post_data(CS%id_diffu, diffu, CS%diag)
