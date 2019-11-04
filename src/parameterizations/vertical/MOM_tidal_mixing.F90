@@ -846,13 +846,13 @@ subroutine calculate_CVMix_tidal(h, j, G, GV, US, CS, N2_int, Kd_lay, Kv)
       SchmittnerSocn = 0.0 ! TODO: compute this
 
       ! form the time-invariant part of Schmittner coefficient term
-      call CVMix_compute_Schmittner_invariant(nlev                    = G%ke,           &
-                                              VertDep                 = vert_dep,       &
-                                              efficiency              = CS%Mu_itides,   &
-                                              rho                     = rho_fw,         &
-                                              exp_hab_zetar           = exp_hab_zetar,  &
-                                              zw                      = iFaceHeight,    &
-                                              CVmix_tidal_params_user = CS%CVMix_tidal_params)
+      call CVMix_compute_Schmittner_invariant(G%ke,           &
+                                              vert_dep,       &
+                                              CS%Mu_itides,   &
+                                              rho_fw,         &
+                                              exp_hab_zetar,  &
+                                              iFaceHeight,    &
+                                              CS%CVMix_tidal_params)
                   !TODO: in above call, there is no need to pass efficiency, since it gets
                   ! passed via CVMix_init_tidal and stored in CVMix_tidal_params. Change
                   ! CVMix API to prevent this redundancy.
@@ -864,29 +864,29 @@ subroutine calculate_CVMix_tidal(h, j, G, GV, US, CS, N2_int, Kd_lay, Kv)
 
       ! form the Schmittner coefficient that is based on 3D q*E, which is formed from
       ! summing q_i*TidalConstituent_i over the number of constituents.
-      call CVMix_compute_SchmittnerCoeff( nlev                    = G%ke,               &
-                                          energy_flux             = tidal_qe_md(:),     &
-                                          rho                     = rho_fw,             &
-                                          SchmittnerCoeff         = Schmittner_coeff,   &
-                                          exp_hab_zetar           = exp_hab_zetar,      &
-                                          CVmix_tidal_params_user = CS%CVMix_tidal_params)
+      call CVMix_compute_SchmittnerCoeff(G%ke,               &
+                                         tidal_qe_md(:),     &
+                                         rho_fw,             &
+                                         Schmittner_coeff,   &
+                                         exp_hab_zetar,      &
+                                         CS%CVMix_tidal_params)
 
       ! XXX: Temporary de-scaling of N2_int(i,:) into a temporary variable
       do k = 1,G%ke+1
         N2_int_i(k) = US%s_to_T**2 * N2_int(i,k)
       enddo
 
-      call CVMix_coeffs_tidal_schmittner( Mdiff_out               = Kv_tidal,             &
-                                          Tdiff_out               = Kd_tidal,             &
-                                          Nsqr                    = N2_int_i,             &
-                                          OceanDepth              = -iFaceHeight(G%ke+1), &
-                                          vert_dep                = vert_dep,             &
-                                          nlev                    = G%ke,                 &
-                                          max_nlev                = G%ke,                 &
-                                          SchmittnerCoeff         = Schmittner_coeff,     &
-                                          SchmittnerSouthernOcean = SchmittnerSocn,       &
-                                          CVmix_params            = CS%CVMix_glb_params,  &
-                                          CVmix_tidal_params_user = CS%CVMix_tidal_params)
+      call CVMix_coeffs_tidal_schmittner(Kv_tidal,             &
+                                         Kd_tidal,             &
+                                         N2_int_i,             &
+                                         -iFaceHeight(G%ke+1), &
+                                         vert_dep,             &
+                                         G%ke,                 &
+                                         G%ke,                 &
+                                         Schmittner_coeff,     &
+                                         SchmittnerSocn,       &
+                                         CS%CVMix_glb_params,  &
+                                         CS%CVMix_tidal_params)
 
       ! Update diffusivity
       do k=1,G%ke
