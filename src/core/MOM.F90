@@ -2288,7 +2288,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   call set_masks_for_axes(G, diag)
 
   ! Diagnose static fields AND associate areas/volumes with axes
-  call write_static_fields(G, GV, US, CS%tv, CS%diag)
+  call write_static_fields(G, GV, US, CS%tv, CS%diag, Time)
   call callTree_waypoint("static fields written (initialize_MOM)")
 
   ! Register the volume cell measure (must be one of first diagnostics)

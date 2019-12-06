@@ -1850,12 +1850,13 @@ subroutine register_transport_diags(Time, G, GV, US, IDs, diag)
 end subroutine register_transport_diags
 
 !> Offers the static fields in the ocean grid type for output via the diag_manager.
-subroutine write_static_fields(G, GV, US, tv, diag)
+subroutine write_static_fields(G, GV, US, tv, diag, Time)
   type(ocean_grid_type),   intent(in)    :: G    !< ocean grid structure
   type(verticalGrid_type), intent(in)    :: GV   !< ocean vertical grid structure
   type(unit_scale_type),   intent(in)    :: US   !< A dimensional unit scaling type
   type(thermo_var_ptrs),   intent(in)    :: tv   !< A structure pointing to various thermodynamic variables
   type(diag_ctrl), target, intent(inout) :: diag !< regulates diagnostic output
+  type(time_type),         intent(in)    :: Time  !< current model time
 
   ! Local variables
   integer :: id
@@ -1893,11 +1894,11 @@ subroutine write_static_fields(G, GV, US, tv, diag)
         'Longitude of zonal velocity (Cu) points', 'degrees_east', interp_method='none')
   if (id > 0) call post_data(id, G%geoLonCu, diag, .true.)
 
-  id = register_static_field('ocean_model', 'area_t', diag%axesT1, &
+  id = register_diag_field('ocean_model', 'area_t', diag%axesT1, Time,&
         'Surface area of tracer (T) cells', 'm2', conversion=US%L_to_m**2, &
         cmor_field_name='areacello', cmor_standard_name='cell_area', &
         cmor_long_name='Ocean Grid-Cell Area', &
-        x_cell_method='sum', y_cell_method='sum', area_cell_method='sum')
+        x_cell_method='sum', y_cell_method='sum',is_static=.true.)
   if (id > 0) then
     call post_data(id, G%areaT, diag, .true.)
     call diag_register_area_ids(diag, id_area_t=id)

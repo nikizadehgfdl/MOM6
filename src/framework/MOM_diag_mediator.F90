@@ -1389,8 +1389,7 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
      if(associated(diag%axes%mask2d)) locmask => diag%axes%mask2d
   endif
 
-  dl=1
-  if(.NOT. is_stat) dl = diag%axes%downsample_level !static field downsample i not supported yet
+  dl = diag%axes%downsample_level
   !Downsample the diag field and mask (if present)
   if (dl > 1) then
      isv_o=isv ; jsv_o=jsv
@@ -1400,7 +1399,7 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
      if (present(mask)) then
         call downsample_field_2d(locmask, locmask_dsamp, dl, MSK, locmask, diag_cs,diag,isv_o,jsv_o,isv,iev,jsv,jev)
         locmask => locmask_dsamp
-     elseif(associated(diag%axes%dsamp(dl)%mask2d)) then
+     elseif(.NOT. is_stat .and. associated(diag%axes%dsamp(dl)%mask2d)) then
         locmask => diag%axes%dsamp(dl)%mask2d
      endif
   endif
@@ -1428,9 +1427,6 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
             'post_data_2d_low is_stat: mask size mismatch: '//diag%debug_str)
         used = send_data(diag%fms_diag_id, locfield, &
                          is_in=isv, js_in=jsv, ie_in=iev, je_in=jev, rmask=locmask)
-     !elseif (associated(diag%axes%mask2d)) then
-     !  used = send_data(diag%fms_diag_id, locfield, &
-     !                   is_in=isv, js_in=jsv, ie_in=iev, je_in=jev, rmask=diag%axes%mask2d)
       else
         used = send_data(diag%fms_diag_id, locfield, &
                          is_in=isv, js_in=jsv, ie_in=iev, je_in=jev)
@@ -1674,8 +1670,7 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
      locmask => diag%axes%mask3d
   endif
 
-  dl=1
-  if(.NOT. is_stat) dl = diag%axes%downsample_level !static field downsample i not supported yet
+  dl = diag%axes%downsample_level
   !Downsample the diag field and mask (if present)
   if (dl > 1) then
      isv_o=isv ; jsv_o=jsv
@@ -1714,9 +1709,6 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
               'post_data_3d_low is_stat: mask size mismatch: '//diag%debug_str)
           used = send_data(diag%fms_diag_id, locfield, &
                          is_in=isv, js_in=jsv, ie_in=iev, je_in=jev, rmask=locmask)
-       !elseif (associated(diag%axes%mask2d)) then
-       !  used = send_data(diag%fms_diag_id, locfield, &
-       !                   is_in=isv, js_in=jsv, ie_in=iev, je_in=jev, rmask=diag%axes%mask2d)
         else
           used = send_data(diag%fms_diag_id, locfield, &
                            is_in=isv, js_in=jsv, ie_in=iev, je_in=jev)
@@ -1874,7 +1866,7 @@ integer function register_diag_field(module_name, field_name, axes_in, init_time
      long_name, units, missing_value, range, mask_variant, standard_name,      &
      verbose, do_not_log, err_msg, interp_method, tile_count, cmor_field_name, &
      cmor_long_name, cmor_units, cmor_standard_name, cell_methods, &
-     x_cell_method, y_cell_method, v_cell_method, conversion, v_extensive)
+     x_cell_method, y_cell_method, v_cell_method, conversion, v_extensive, is_static)
   character(len=*), intent(in) :: module_name !< Name of this module, usually "ocean_model"
                                               !! or "ice_shelf_model"
   character(len=*), intent(in) :: field_name !< Name of the diagnostic field
@@ -1912,6 +1904,7 @@ integer function register_diag_field(module_name, field_name, axes_in, init_time
   real,             optional, intent(in) :: conversion !< A value to multiply data by before writing to file
   logical,          optional, intent(in) :: v_extensive !< True for vertically extensive fields (vertically
                                                          !! integrated). Default/absent for intensive.
+  logical,          optional, intent(in) :: is_static  !< This is a static diagnostic
   ! Local variables
   real :: MOM_missing_value
   type(diag_ctrl), pointer :: diag_cs => NULL()
@@ -1956,7 +1949,7 @@ integer function register_diag_field(module_name, field_name, axes_in, init_time
              cmor_units=cmor_units, cmor_standard_name=cmor_standard_name, &
              cell_methods=cell_methods, x_cell_method=x_cell_method, &
              y_cell_method=y_cell_method, v_cell_method=v_cell_method, &
-             conversion=conversion, v_extensive=v_extensive)
+             conversion=conversion, v_extensive=v_extensive, is_static=is_static)
 
   ! For each diagnostic coordinate register the diagnostic again under a different module name
   do i=1,diag_cs%num_diag_coords
@@ -1996,7 +1989,7 @@ integer function register_diag_field(module_name, field_name, axes_in, init_time
                      cmor_units=cmor_units, cmor_standard_name=cmor_standard_name, &
                      cell_methods=cell_methods, x_cell_method=x_cell_method, &
                      y_cell_method=y_cell_method, v_cell_method=v_cell_method, &
-                     conversion=conversion, v_extensive=v_extensive)
+                     conversion=conversion, v_extensive=v_extensive, is_static=is_static)
           if (active) then
             call diag_remap_set_active(diag_cs%diag_remap_cs(i))
           endif
@@ -2055,7 +2048,7 @@ integer function register_diag_field(module_name, field_name, axes_in, init_time
                 cmor_units=cmor_units, cmor_standard_name=cmor_standard_name, &
                 cell_methods=cell_methods, x_cell_method=x_cell_method, &
                 y_cell_method=y_cell_method, v_cell_method=v_cell_method, &
-                conversion=conversion, v_extensive=v_extensive)
+                conversion=conversion, v_extensive=v_extensive, is_static=is_static)
      endif
 
      ! For each diagnostic coordinate register the diagnostic again under a different module name
@@ -2097,7 +2090,7 @@ integer function register_diag_field(module_name, field_name, axes_in, init_time
                       cmor_units=cmor_units, cmor_standard_name=cmor_standard_name, &
                       cell_methods=cell_methods, x_cell_method=x_cell_method, &
                       y_cell_method=y_cell_method, v_cell_method=v_cell_method, &
-                      conversion=conversion, v_extensive=v_extensive)
+                      conversion=conversion, v_extensive=v_extensive, is_static=is_static)
                  if (active) then
                     call diag_remap_set_active(diag_cs%diag_remap_cs(i))
                  endif
@@ -2117,7 +2110,7 @@ logical function register_diag_field_expand_cmor(dm_id, module_name, field_name,
      long_name, units, missing_value, range, mask_variant, standard_name,      &
      verbose, do_not_log, err_msg, interp_method, tile_count, cmor_field_name, &
      cmor_long_name, cmor_units, cmor_standard_name, cell_methods, &
-     x_cell_method, y_cell_method, v_cell_method, conversion, v_extensive)
+     x_cell_method, y_cell_method, v_cell_method, conversion, v_extensive, is_static)
   integer,          intent(inout) :: dm_id !< The diag_mediator ID for this diagnostic group
   character(len=*), intent(in) :: module_name !< Name of this module, usually "ocean_model" or "ice_shelf_model"
   character(len=*), intent(in) :: field_name !< Name of the diagnostic field
@@ -2155,6 +2148,7 @@ logical function register_diag_field_expand_cmor(dm_id, module_name, field_name,
   real,             optional, intent(in) :: conversion !< A value to multiply data by before writing to file
   logical,          optional, intent(in) :: v_extensive !< True for vertically extensive fields (vertically
                                                          !! integrated). Default/absent for intensive.
+  logical,          optional, intent(in) :: is_static  !< This is a static diagnostic
   ! Local variables
   real :: MOM_missing_value
   type(diag_ctrl), pointer :: diag_cs => null()
@@ -2173,7 +2167,7 @@ logical function register_diag_field_expand_cmor(dm_id, module_name, field_name,
              long_name=long_name, units=units, missing_value=MOM_missing_value, &
              range=range, mask_variant=mask_variant, standard_name=standard_name, &
              verbose=verbose, do_not_log=do_not_log, err_msg=err_msg, &
-             interp_method=interp_method, tile_count=tile_count)
+             interp_method=interp_method, tile_count=tile_count, is_static=is_static)
   if (.not. diag_cs%diag_as_chksum) &
     call attach_cell_methods(fms_id, axes, cm_string, cell_methods, &
                              x_cell_method, y_cell_method, v_cell_method, &
@@ -2192,7 +2186,7 @@ logical function register_diag_field_expand_cmor(dm_id, module_name, field_name,
              long_name=long_name, units=units, missing_value=MOM_missing_value, &
              range=range, mask_variant=mask_variant, standard_name=standard_name, &
              verbose=verbose, do_not_log=do_not_log, err_msg=err_msg, &
-             interp_method=interp_method, tile_count=tile_count)
+             interp_method=interp_method, tile_count=tile_count, is_static=is_static)
     if (.not. diag_cs%diag_as_chksum) &
       call attach_cell_methods(fms_xyave_id, axes%xyave_axes, cm_string, &
                                cell_methods, v_cell_method, v_extensive=v_extensive)
@@ -2236,7 +2230,7 @@ logical function register_diag_field_expand_cmor(dm_id, module_name, field_name,
                long_name=trim(posted_cmor_long_name), units=trim(posted_cmor_units),                  &
                missing_value=MOM_missing_value, range=range, mask_variant=mask_variant,               &
                standard_name=trim(posted_cmor_standard_name), verbose=verbose, do_not_log=do_not_log, &
-               err_msg=err_msg, interp_method=interp_method, tile_count=tile_count)
+               err_msg=err_msg, interp_method=interp_method, tile_count=tile_count, is_static=is_static)
     call attach_cell_methods(fms_id, axes, cm_string, &
                              cell_methods, x_cell_method, y_cell_method, v_cell_method, &
                              v_extensive=v_extensive)
@@ -2254,7 +2248,7 @@ logical function register_diag_field_expand_cmor(dm_id, module_name, field_name,
                long_name=trim(posted_cmor_long_name), units=trim(posted_cmor_units),                  &
                missing_value=MOM_missing_value, range=range, mask_variant=mask_variant,               &
                standard_name=trim(posted_cmor_standard_name), verbose=verbose, do_not_log=do_not_log, &
-               err_msg=err_msg, interp_method=interp_method, tile_count=tile_count)
+               err_msg=err_msg, interp_method=interp_method, tile_count=tile_count, is_static=is_static)
       call attach_cell_methods(fms_xyave_id, axes%xyave_axes, cm_string, &
                                cell_methods, v_cell_method, v_extensive=v_extensive)
       if (is_root_pe() .and. diag_CS%available_diag_doc_unit > 0) then
@@ -2282,7 +2276,7 @@ end function register_diag_field_expand_cmor
 !! (axes-group) into handles and conditionally adding an FMS area_id for cell_measures.
 integer function register_diag_field_expand_axes(module_name, field_name, axes, init_time, &
      long_name, units, missing_value, range, mask_variant, standard_name,  &
-     verbose, do_not_log, err_msg, interp_method, tile_count)
+     verbose, do_not_log, err_msg, interp_method, tile_count, is_static)
   character(len=*), intent(in) :: module_name !< Name of this module, usually "ocean_model"
                                               !! or "ice_shelf_model"
   character(len=*), intent(in) :: field_name !< Name of the diagnostic field
@@ -2304,6 +2298,7 @@ integer function register_diag_field_expand_axes(module_name, field_name, axes, 
   character(len=*), optional, intent(in) :: interp_method !< If 'none' indicates the field should
                                                          !! not be interpolated as a scalar
   integer,          optional, intent(in) :: tile_count !< no clue (not used in MOM?)
+  logical,          optional, intent(in) :: is_static  !< This is a static diagnostic
   ! Local variables
   integer :: fms_id, area_id, volume_id
 
@@ -2315,6 +2310,12 @@ integer function register_diag_field_expand_axes(module_name, field_name, axes, 
   if (axes%diag_cs%diag_as_chksum) then
     fms_id = axes%diag_cs%num_chksum_diags + 1
     axes%diag_cs%num_chksum_diags = fms_id
+  else if (present(is_static)) then
+    fms_id = register_static_field_fms(module_name, field_name, axes%handles, &
+             long_name=long_name, units=units, missing_value=missing_value, &
+             range=range, mask_variant=mask_variant, standard_name=standard_name, &
+             do_not_log=do_not_log, &
+             interp_method=interp_method, tile_count=tile_count)
   else if (present(interp_method) .or. axes%is_h_point) then
     ! If interp_method is provided we must use it
     if (area_id>0) then
