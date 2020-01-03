@@ -52,7 +52,6 @@ use coupler_types_mod,       only : coupler_type_initialized, coupler_type_copy_
 use coupler_types_mod,       only : coupler_type_set_diags, coupler_type_send_data
 use mpp_domains_mod,         only : domain2d, mpp_get_layout, mpp_get_global_domain
 use mpp_domains_mod,         only : mpp_define_domains, mpp_get_compute_domain, mpp_get_data_domain
-use atmos_ocean_fluxes_mod,  only : aof_set_coupler_flux
 use fms_mod,                 only : stdout
 use mpp_mod,                 only : mpp_chksum
 use MOM_EOS,                 only : gsw_sp_from_sr, gsw_pt_from_ct
@@ -80,6 +79,7 @@ public ice_ocn_bnd_type_chksum
 public ocean_public_type_chksum
 public ocean_model_data_get
 public get_ocean_grid
+public get_eps_omesh
 
 !> This interface extracts a named scalar field or array from the ocean surface or public type
 interface ocean_model_data_get
@@ -181,6 +181,9 @@ type, public :: ocean_state_type ; private
                               !! steps can span multiple coupled time steps.
   logical :: diabatic_first   !< If true, apply diabatic and thermodynamic
                               !! processes before time stepping the dynamics.
+
+  real :: eps_omesh           !< Max allowable difference between ESMF mesh and MOM6
+                              !! domain coordinates
 
   type(directories) :: dirs   !< A structure containing several relevant directory paths.
   type(mech_forcing) :: forces !< A structure with the driving mechanical surface forces
@@ -327,6 +330,10 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
   else ; call MOM_error(FATAL,"ocean_model_init: OCEAN_SURFACE_STAGGER = "// &
                         trim(stagger)//" is invalid.") ; endif
 
+  call get_param(param_file, mdl, "EPS_OMESH",OS%eps_omesh, &
+                 "Maximum allowable difference between ESMF mesh and "//&
+                 "MOM6 domain coordinates in nuopc cap.", &
+                 units="degrees", default=1.e-4)
   call get_param(param_file, mdl, "RESTORE_SALINITY",OS%restore_salinity, &
                  "If true, the coupled driver will add a globally-balanced "//&
                  "fresh-water flux that drives sea-surface salinity "//&
@@ -353,7 +360,7 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
 
   OS%press_to_z = 1.0/(Rho0*G_Earth)
 
-    call get_param(param_file, mdl, "HFREEZE", HFrz, &
+  call get_param(param_file, mdl, "HFREEZE", HFrz, &
                  "If HFREEZE > 0, melt potential will be computed. The actual depth "//&
                  "over which melt potential is computed will be min(HFREEZE, OBLD), "//&
                  "where OBLD is the boundary layer depth. If HFREEZE <= 0 (default), "//&
@@ -510,7 +517,7 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
 
   if (OS%fluxes%fluxes_used) then
     if (do_thermo) &
-      call convert_IOB_to_fluxes(Ice_ocean_boundary, OS%fluxes, index_bnds, OS%Time, &
+      call convert_IOB_to_fluxes(Ice_ocean_boundary, OS%fluxes, index_bnds, OS%Time, dt_coupling, &
                                OS%grid, OS%US, OS%forcing_CSp, OS%sfc_state, &
                                OS%restore_salinity, OS%restore_temp)
 
@@ -526,7 +533,7 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
         call iceberg_forces(OS%grid, OS%forces, OS%use_ice_shelf, &
                             OS%sfc_state, dt_coupling, OS%marine_ice_CSp)
       if (do_thermo) &
-        call iceberg_fluxes(OS%grid, OS%fluxes, OS%use_ice_shelf, &
+        call iceberg_fluxes(OS%grid, OS%US, OS%fluxes, OS%use_ice_shelf, &
                           OS%sfc_state, dt_coupling, OS%marine_ice_CSp)
     endif
 
@@ -537,13 +544,10 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
     call enable_averaging(dt_coupling, OS%Time + Ocean_coupling_time_step, OS%diag) !Is this needed?
     call MOM_generic_tracer_fluxes_accumulate(OS%fluxes, weight) !here weight=1, just saving the current fluxes
 #endif
-    ! Indicate that there are new unused fluxes.
-    OS%fluxes%fluxes_used = .false.
-    OS%fluxes%dt_buoy_accum = dt_coupling
   else
     OS%flux_tmp%C_p = OS%fluxes%C_p
     if (do_thermo) &
-      call convert_IOB_to_fluxes(Ice_ocean_boundary, OS%flux_tmp, index_bnds, OS%Time, &
+      call convert_IOB_to_fluxes(Ice_ocean_boundary, OS%flux_tmp, index_bnds, OS%Time, dt_coupling, &
                                OS%grid, OS%US, OS%forcing_CSp, OS%sfc_state, OS%restore_salinity,OS%restore_temp)
 
     if (OS%use_ice_shelf) then
@@ -557,11 +561,11 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
         call iceberg_forces(OS%grid, OS%forces, OS%use_ice_shelf, &
                             OS%sfc_state, dt_coupling, OS%marine_ice_CSp)
       if (do_thermo) &
-        call iceberg_fluxes(OS%grid, OS%flux_tmp, OS%use_ice_shelf, &
+        call iceberg_fluxes(OS%grid, OS%US, OS%flux_tmp, OS%use_ice_shelf, &
                           OS%sfc_state, dt_coupling, OS%marine_ice_CSp)
     endif
 
-    call forcing_accumulate(OS%flux_tmp, OS%forces, OS%fluxes, dt_coupling, OS%grid, weight)
+    call forcing_accumulate(OS%flux_tmp, OS%forces, OS%fluxes, OS%grid, weight)
     ! Some of the fields that exist in both the forcing and mech_forcing types
     ! (e.g., ustar) are time-averages must be copied back to the forces type.
     call copy_back_forcing_fields(OS%fluxes, OS%forces, OS%grid)
@@ -571,7 +575,7 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
 #endif
   endif
   call set_derived_forcing_fields(OS%forces, OS%fluxes, OS%grid, OS%US, OS%GV%Rho0)
-  call set_net_mass_forcing(OS%fluxes, OS%forces, OS%grid)
+  call set_net_mass_forcing(OS%fluxes, OS%forces, OS%grid, OS%US)
 
   if (OS%use_waves) then
     call Update_Surface_Waves(OS%grid, OS%GV, OS%US, OS%time, ocean_coupling_time_step, OS%waves)
@@ -657,15 +661,10 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
   OS%Time = Master_time + Ocean_coupling_time_step
   OS%nstep = OS%nstep + 1
 
-  call enable_averaging(dt_coupling, OS%Time, OS%diag)
-  call mech_forcing_diags(OS%forces, dt_coupling, OS%grid, OS%diag, OS%forcing_CSp%handles)
-  call disable_averaging(OS%diag)
+  call mech_forcing_diags(OS%forces, dt_coupling, OS%grid, OS%Time, OS%diag, OS%forcing_CSp%handles)
 
   if (OS%fluxes%fluxes_used) then
-    call enable_averaging(OS%fluxes%dt_buoy_accum, OS%Time, OS%diag)
-    call forcing_diagnostics(OS%fluxes, OS%sfc_state, OS%fluxes%dt_buoy_accum, &
-                             OS%grid, OS%diag, OS%forcing_CSp%handles)
-    call disable_averaging(OS%diag)
+    call forcing_diagnostics(OS%fluxes, OS%sfc_state, OS%grid, OS%US, OS%Time, OS%diag, OS%forcing_CSp%handles)
   endif
 
 ! Translate state into Ocean.
@@ -1174,5 +1173,11 @@ subroutine get_ocean_grid(OS, Gridp)
   Gridp => OS%grid
   return
 end subroutine get_ocean_grid
+
+!> Returns eps_omesh read from param file
+real function get_eps_omesh(OS)
+  type(ocean_state_type) :: OS
+  get_eps_omesh = OS%eps_omesh; return
+end function
 
 end module MOM_ocean_model_nuopc

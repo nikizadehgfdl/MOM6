@@ -1,7 +1,11 @@
 SHELL = bash
-MPIRUN ?= mpirun
 
+# User-defined configuration
 -include config.mk
+
+# Default configurations
+MPIRUN ?= mpirun
+DO_REPRO_TESTS ?= true
 
 #---
 # Dependencies
@@ -38,41 +42,51 @@ MKMF_TEMPLATE ?= $(DEPS)/mkmf/templates/ncrc-gnu.mk
 # Executables
 BUILDS = symmetric asymmetric repro openmp
 CONFIGS := $(wildcard tc*)
-TESTS = grids layouts restarts repros nans dims
+TESTS = grids layouts restarts nans dims openmps
+
+# REPRO tests enable reproducibility with optimization, and often do not match
+# the DEBUG results in older GCCs and vendor compilers, so we can optionally
+# disable them.
+ifeq ($(DO_REPRO_TESTS), true)
+  BUILDS += repro
+  TESTS += repros
+endif
 
 # The following variables are configured by Travis:
 #   DO_REGRESSION_TESTS: true if $(TRAVIS_PULL_REQUEST) is a PR number
 #   MOM_TARGET_SLUG: TRAVIS_REPO_SLUG
 #   MOM_TARGET_LOCAL_BRANCH: TRAVIS_BRANCH
-#
-# These are set to true by Travis if testing a pull request
+
+# These are set to true by our Travis configuration if testing a pull request
 DO_REGRESSION_TESTS ?=
 REPORT_COVERAGE ?=
 
 ifeq ($(DO_REGRESSION_TESTS), true)
-	BUILDS += target
-	TEST += regressions
+  BUILDS += target
+  TESTS += regressions
 
-	MOM_TARGET_SLUG ?= NOAA-GFDL/MOM6
-	MOM_TARGET_URL ?= https://github.com/$(MOM_TARGET_SLUG)
+  MOM_TARGET_SLUG ?= NOAA-GFDL/MOM6
+  MOM_TARGET_URL ?= https://github.com/$(MOM_TARGET_SLUG)
 
-	MOM_TARGET_LOCAL_BRANCH ?= dev/gfdl
-	MOM_TARGET_BRANCH := origin/$(MOM_TARGET_LOCAL_BRANCH)
+  MOM_TARGET_LOCAL_BRANCH ?= dev/gfdl
+  MOM_TARGET_BRANCH := origin/$(MOM_TARGET_LOCAL_BRANCH)
 
-	TARGET_CODEBASE = $(BUILD)/target_codebase
+  TARGET_CODEBASE = $(BUILD)/target_codebase
 else
-	MOM_TARGET_URL =
-	MOM_TARGET_BRANCH =
-	TARGET_CODEBASE =
+  MOM_TARGET_URL =
+  MOM_TARGET_BRANCH =
+  TARGET_CODEBASE =
 endif
 
 SOURCE = $(wildcard $(BASE)/src/*/*.F90 $(BASE)/src/*/*/*.F90 $(BASE)/config_src/solo_driver/*.F90)
 
+
 #---
 # Rules
 
-.PHONY: all
+.PHONY: all build.regressions
 all: $(foreach b,$(BUILDS),$(BUILD)/$(b)/MOM6)
+build.regressions: $(foreach b,symmetric target,$(BUILD)/$(b)/MOM6)
 
 # Executable
 BUILD_TARGETS = MOM6 Makefile path_names
@@ -85,7 +99,7 @@ $(BUILD)/target/MOM6: MOMFLAGS=NETCDF=3 DEBUG=1
 $(BUILD)/symmetric/MOM6: MOMFLAGS=NETCDF=3 DEBUG=1 $(COVFLAG)
 $(BUILD)/asymmetric/MOM6: MOMFLAGS=NETCDF=3 DEBUG=1
 $(BUILD)/repro/MOM6: MOMFLAGS=NETCDF=3 REPRO=1
-$(BUILD)/openmp/MOM6: MOMFLAGS=NETCDF=3 OPENMP=1
+$(BUILD)/openmp/MOM6: MOMFLAGS=NETCDF=3 DEBUG=1 OPENMP=1
 
 $(BUILD)/asymmetric/path_names: GRID_SRC=config_src/dynamic
 $(BUILD)/%/path_names: GRID_SRC=config_src/dynamic_symmetric
@@ -166,7 +180,6 @@ test: $(foreach t,$(TESTS),test.$(t))
 # NOTE: We remove tc3 (OBC) from grid test since it cannot run asymmetric grids
 
 .PHONY: $(foreach t,$(TESTS),test.$(t))
-test.regressions: $(foreach c,$(CONFIGS),$(c).regression $(c).regression.diag)
 test.grids: $(foreach c,$(filter-out tc3,$(CONFIGS)),$(c).grid $(c).grid.diag)
 test.layouts: $(foreach c,$(CONFIGS),$(c).layout $(c).layout.diag)
 test.restarts: $(foreach c,$(CONFIGS),$(c).restart)
@@ -175,18 +188,19 @@ test.openmps: $(foreach c,$(CONFIGS),$(c).openmp $(c).openmp.diag)
 test.nans: $(foreach c,$(CONFIGS),$(c).nan $(c).nan.diag)
 test.dims: $(foreach c,$(CONFIGS),$(foreach d,t l h z,$(c).dim.$(d) $(c).dim.$(d).diag))
 
-# NOTE: chksum_diag return code of cmp is currently ignored since many fail!
+test.regressions: $(foreach c,$(CONFIGS),$(c).regression $(c).regression.diag)
+	! ls -1 results/*/*.reg
+
 define CMP_RULE
 .PRECIOUS: $(foreach b,$(2),results/%/ocean.stats.$(b))
 %.$(1): $(foreach b,$(2),results/%/ocean.stats.$(b))
-	cmp $$^
+	cmp $$^ || diff $$^
 
 .PRECIOUS: $(foreach b,$(2),results/%/chksum_diag.$(b))
 %.$(1).diag: $(foreach b,$(2),results/%/chksum_diag.$(b))
-	cmp $$^
+	cmp $$^ || diff $$^
 endef
 
-$(eval $(call CMP_RULE,regression,symmetric target))
 $(eval $(call CMP_RULE,grid,symmetric asymmetric))
 $(eval $(call CMP_RULE,layout,symmetric layout))
 $(eval $(call CMP_RULE,repro,symmetric repro))
@@ -194,23 +208,35 @@ $(eval $(call CMP_RULE,openmp,symmetric openmp))
 $(eval $(call CMP_RULE,nan,symmetric nan))
 $(foreach d,t l h z,$(eval $(call CMP_RULE,dim.$(d),symmetric dim.$(d))))
 
+# Custom comparison rules
+
+.PRECIOUS: $(foreach b,symmetric restart target,results/%/ocean.stats.$(b))
+
 # Restart tests only compare the final stat record
-.PRECIOUS: $(foreach b,symmetric restart,results/%/ocean.stats.$(b))
 %.restart: $(foreach b,symmetric restart,results/%/ocean.stats.$(b))
-	cmp $(foreach f,$^,<(tr -s ' ' < $(f) | cut -d ' ' -f3- | tail -n 1))
+	cmp $(foreach f,$^,<(tr -s ' ' < $(f) | cut -d ' ' -f3- | tail -n 1)) \
+		|| diff $^
 
 # TODO: chksum_diag parsing of restart files
 
+# All regression tests must be completed when considering answer changes
+%.regression: $(foreach b,symmetric target,results/%/ocean.stats.$(b))
+	cmp $^ || (diff $^ > $<.reg || true)
+
+%.regression.diag: $(foreach b,symmetric target,results/%/chksum_diag.$(b))
+	cmp $^ || (diff $^ > $<.reg || true)
 
 #---
 # Test run output files
 
-# Simple function for generalized Slurm (srun) and OpenMPI (mpirun) support
+# Generalized MPI environment variable support
 # $(1): Environment variables
-ifeq ($(MPIRUN), srun)
-MPIRUN_CMD=$(1) $(MPIRUN)
+ifeq ($(shell $(MPIRUN) -x tmp=1 true 2> /dev/null ; echo $$?), 0)
+  MPIRUN_CMD=$(MPIRUN) $(if $(1),-x $(1),)
+else ifeq ($(shell $(MPIRUN) -env tmp=1 true 2> /dev/null ; echo $$?), 0)
+  MPIRUN_CMD=$(MPIRUN) $(if $(1),-env $(1),)
 else
-MPIRUN_CMD=$(MPIRUN) $(if $(1),-x $(1),)
+  MPIRUN_CMD=$(1) $(MPIRUN)
 endif
 
 # Rule to build results/<tc>/{ocean.stats,chksum_diag}.<tag>
@@ -225,6 +251,7 @@ results/%/ocean.stats.$(1): ../build/$(2)/MOM6
 	if [ $(3) ]; then find ../build/$(2) -name *.gcda -exec rm -f '{}' \; ; fi
 	mkdir -p work/$$*/$(1)
 	cp -rL $$*/* work/$$*/$(1)
+	cd work/$$*/$(1) && if [ -f Makefile ]; then make; fi
 	mkdir -p work/$$*/$(1)/RESTART
 	echo $(4) > work/$$*/$(1)/MOM_override
 	cd work/$$*/$(1) && $$(call MPIRUN_CMD,$(5)) -n $(6) ../../../$$< 2> debug.out > std.out \
@@ -259,6 +286,7 @@ results/%/ocean.stats.restart: ../build/symmetric/MOM6
 	rm -rf work/$*/restart
 	mkdir -p work/$*/restart
 	cp -rL $*/* work/$*/restart
+	cd work/$*/restart && if [ -f Makefile ]; then make; fi
 	mkdir -p work/$*/restart/RESTART
 	# Generate the half-period input namelist
 	# TODO: Assumes runtime set by DAYMAX, will fail if set by input.nml
@@ -268,20 +296,19 @@ results/%/ocean.stats.restart: ../build/symmetric/MOM6
 		&& if [ -z "$${timeunit}" ]; then timeunit="8.64e4"; fi \
 		&& printf -v timeunit_int "%.f" "$${timeunit}" \
 		&& halfperiod=$$(printf "%.f" $$(bc <<< "scale=10; 0.5 * $${daymax} * $${timeunit_int}")) \
-		&& printf "\n&ocean_solo_nml\n    seconds = $${halfperiod}\n/\n" >> input.nml \
-		&& echo $${daymax} $${timeunit}
+		&& printf "\n&ocean_solo_nml\n    seconds = $${halfperiod}\n/\n" >> input.nml
 	# Run the first half-period
-	cd work/$*/restart && $(MPIRUN) -n 1 ../../../$< 2> debug.out > std.out \
-		|| ! sed 's/^/$*.restart1: /' std.out debug.out \
-		&& sed 's/^/$*.restart1: /' std.out
+	cd work/$*/restart && $(MPIRUN) -n 1 ../../../$< 2> debug1.out > std1.out \
+		|| ! sed 's/^/$*.restart1: /' std1.out debug1.out \
+		&& sed 's/^/$*.restart1: /' std1.out
 	# Setup the next inputs
 	cd work/$*/restart && rm -rf INPUT && mv RESTART INPUT
 	mkdir work/$*/restart/RESTART
 	cd work/$*/restart && sed -i -e "s/input_filename *= *'n'/input_filename = 'r'/g" input.nml
 	# Run the second half-period
-	cd work/$*/restart && $(MPIRUN) -n 1 ../../../$< 2> debug.out > std.out \
-		|| ! sed 's/^/$*.restart2: /' std.out debug.out \
-		&& sed 's/^/$*.restart2: /' std.out
+	cd work/$*/restart && $(MPIRUN) -n 1 ../../../$< 2> debug2.out > std2.out \
+		|| ! sed 's/^/$*.restart2: /' std2.out debug2.out \
+		&& sed 's/^/$*.restart2: /' std2.out
 	# Archive the results and cleanup
 	mkdir -p $(@D)
 	cp work/$*/restart/ocean.stats $@
