@@ -724,7 +724,8 @@ subroutine MEKE_equilibrium(CS, MEKE, G, GV, US, SN_u, SN_v, drag_rate_visc, I_m
           if (resid<ResMin) useSecant = .true.
           ResMin = resid
           if (EKEmax > 2.e17*US%m_s_to_L_T**2) then
-            if (debugIteration) stop 'Something has gone very wrong'
+            if (debugIteration) call MOM_error(FATAL, &
+                 "MEKE_equilibrium: Something has gone very wrong!")
             debugIteration = .true.
             resid = 1. ; n1 = 0
             EKEmin = 0. ; ResMin = 0.
