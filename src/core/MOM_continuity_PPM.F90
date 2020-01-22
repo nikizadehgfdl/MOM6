@@ -129,8 +129,8 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, uhbt, vhbt, O
   type(loop_bounds_type) :: LB
   integer :: is, ie, js, je, nz, stencil
   integer :: i, j, k
-
   logical :: x_first
+
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
 
   h_min = GV%Angstrom_H
@@ -152,7 +152,7 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, uhbt, vhbt, O
     call zonal_mass_flux(u, hin, uh, dt, G, GV, US, CS, LB, uhbt, OBC, visc_rem_u, u_cor, BT_cont)
 
     call cpu_clock_begin(id_clock_update)
-    !$OMP parallel do default(shared)
+    !NOMP parallel do default(shared)
     do k=1,nz ; do j=LB%jsh,LB%jeh ; do i=LB%ish,LB%ieh
       h(i,j,k) = hin(i,j,k) - dt * G%IareaT(i,j) * (uh(I,j,k) - uh(I-1,j,k))
   !   Uncomment this line to prevent underflow.
@@ -167,7 +167,7 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, uhbt, vhbt, O
     call meridional_mass_flux(v, h, vh, dt, G, GV, US, CS, LB, vhbt, OBC, visc_rem_v, v_cor, BT_cont)
 
     call cpu_clock_begin(id_clock_update)
-    !$OMP parallel do default(shared)
+    !NOMP parallel do default(shared)
     do k=1,nz ; do j=LB%jsh,LB%jeh ; do i=LB%ish,LB%ieh
       h(i,j,k) = h(i,j,k) - dt * G%IareaT(i,j) * (vh(i,J,k) - vh(i,J-1,k))
   !   This line prevents underflow.
@@ -183,10 +183,11 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, uhbt, vhbt, O
     call meridional_mass_flux(v, hin, vh, dt, G, GV, US, CS, LB, vhbt, OBC, visc_rem_v, v_cor, BT_cont)
 
     call cpu_clock_begin(id_clock_update)
-    !$OMP parallel do default(shared)
+    !NOMP parallel do default(shared)
     do k=1,nz ; do j=LB%jsh,LB%jeh ; do i=LB%ish,LB%ieh
       h(i,j,k) = hin(i,j,k) - dt * G%IareaT(i,j) * (vh(i,J,k) - vh(i,J-1,k))
     enddo ; enddo ; enddo
+
     call cpu_clock_end(id_clock_update)
 
   !    Now advect zonally, using the updated thicknesses to determine
@@ -195,18 +196,29 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, uhbt, vhbt, O
     call zonal_mass_flux(u, h, uh, dt, G, GV, US, CS, LB, uhbt, OBC, visc_rem_u, u_cor, BT_cont)
 
     call cpu_clock_begin(id_clock_update)
-    !$OMP parallel do default(shared)
-    do k=1,nz ; do j=LB%jsh,LB%jeh ; do i=LB%ish,LB%ieh
+    !NOMP parallel do default(shared) private(i,j)
+    do k=1,nz 
+      do j=LB%jsh,LB%jeh ; do i=LB%ish,LB%ieh
       h(i,j,k) = h(i,j,k) - dt * G%IareaT(i,j) * (uh(I,j,k) - uh(I-1,j,k))
       ! This line prevents underflow.
       if (h(i,j,k) < h_min) h(i,j,k) = h_min
-    enddo ; enddo ; enddo
+      enddo ; enddo 
+    enddo
     call cpu_clock_end(id_clock_update)
 
   endif
 
 end subroutine continuity_PPM
 
+subroutine dontCallMe
+    integer :: k
+    stop
+    !$OMP parallel do
+    do k=1,2
+      !continue 
+    enddo
+   !$OMP end parallel do 
+end subroutine dontCallMe
 !> Calculates the mass or volume fluxes through the zonal faces, and other related quantities.
 subroutine zonal_mass_flux(u, h_in, uh, dt, G, GV, US, CS, LB, uhbt, OBC, &
                            visc_rem_u, u_cor, BT_cont)
@@ -283,7 +295,7 @@ subroutine zonal_mass_flux(u, h_in, uh, dt, G, GV, US, CS, LB, uhbt, OBC, &
   if (CS%aggress_adjust) CFL_dt = I_dt
 
   call cpu_clock_begin(id_clock_update)
-!$OMP parallel do default(none) shared(ish,ieh,jsh,jeh,nz,CS,h_L,h_in,h_R,G,GV,LB,visc_rem,OBC)
+!NOMP parallel do default(none) shared(ish,ieh,jsh,jeh,nz,CS,h_L,h_in,h_R,G,GV,LB,visc_rem,OBC)
   do k=1,nz
     ! This sets h_L and h_R.
     if (CS%upwind_1st) then
@@ -299,12 +311,12 @@ subroutine zonal_mass_flux(u, h_in, uh, dt, G, GV, US, CS, LB, uhbt, OBC, &
   call cpu_clock_end(id_clock_update)
 
   call cpu_clock_begin(id_clock_correct)
-!$OMP parallel do default(none) shared(ish,ieh,jsh,jeh,nz,u,h_in,h_L,h_R,use_visc_rem,visc_rem_u,  &
-!$OMP                                  uh,dt,US,G,GV,CS,local_specified_BC,OBC,uhbt,set_BT_cont,    &
-!$OMP                                  CFL_dt,I_dt,u_cor,BT_cont, local_Flather_OBC) &
-!$OMP                          private(do_I,duhdu,du,du_max_CFL,du_min_CFL,uh_tot_0,duhdu_tot_0, &
-!$OMP                                  is_simple,FAuI,visc_rem_max,I_vrm,du_lim,dx_E,dx_W,any_simple_OBC ) &
-!$OMP      firstprivate(visc_rem)
+!NOMP parallel do default(none) shared(ish,ieh,jsh,jeh,nz,u,h_in,h_L,h_R,use_visc_rem,visc_rem_u,  &
+!NOMP                                  uh,dt,US,G,GV,CS,local_specified_BC,OBC,uhbt,set_BT_cont,    &
+!NOMP                                  CFL_dt,I_dt,u_cor,BT_cont, local_Flather_OBC) &
+!NOMP                          private(do_I,duhdu,du,du_max_CFL,du_min_CFL,uh_tot_0,duhdu_tot_0, &
+!NOMP                                  is_simple,FAuI,visc_rem_max,I_vrm,du_lim,dx_E,dx_W,any_simple_OBC ) &
+!NOMP      firstprivate(visc_rem)
   do j=jsh,jeh
     do I=ish-1,ieh ; do_I(I) = .true. ; visc_rem_max(I) = 0.0 ; enddo
     ! Set uh and duhdu.
@@ -611,7 +623,7 @@ subroutine zonal_face_thickness(u, h, h_L, h_R, h_u, dt, G, US, LB, vol_CFL, &
   integer :: i, j, k, ish, ieh, jsh, jeh, nz, n
   ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = G%ke
 
-  !$OMP parallel do default(shared) private(CFL,curv_3,h_marg,h_avg)
+  !NOMP parallel do default(shared) private(CFL,curv_3,h_marg,h_avg)
   do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh
     if (u(I,j,k) > 0.0) then
       if (vol_CFL) then ; CFL = (u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i,j))
@@ -639,7 +651,7 @@ subroutine zonal_face_thickness(u, h, h_L, h_R, h_u, dt, G, US, LB, vol_CFL, &
     else ; h_u(I,j,k) = h_avg ; endif
   enddo ; enddo ; enddo
   if (present(visc_rem_u)) then
-    !$OMP parallel do default(shared)
+    !NOMP parallel do default(shared)
     do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh
       h_u(I,j,k) = h_u(I,j,k) * visc_rem_u(I,j,k)
     enddo ; enddo ; enddo
@@ -1082,7 +1094,7 @@ subroutine meridional_mass_flux(v, h_in, vh, dt, G, GV, US, CS, LB, vhbt, OBC, &
   if (CS%aggress_adjust) CFL_dt = I_dt
 
   call cpu_clock_begin(id_clock_update)
-!$OMP parallel do default(none) shared(nz,ish,ieh,jsh,jeh,h_in,h_L,h_R,G,GV,LB,CS,visc_rem,OBC)
+!NOMP parallel do default(none) shared(nz,ish,ieh,jsh,jeh,h_in,h_L,h_R,G,GV,LB,CS,visc_rem,OBC)
   do k=1,nz
     ! This sets h_L and h_R.
     if (CS%upwind_1st) then
@@ -1098,13 +1110,13 @@ subroutine meridional_mass_flux(v, h_in, vh, dt, G, GV, US, CS, LB, vhbt, OBC, &
   call cpu_clock_end(id_clock_update)
 
   call cpu_clock_begin(id_clock_correct)
-!$OMP parallel do default(none) shared(ish,ieh,jsh,jeh,nz,v,h_in,h_L,h_R,vh,use_visc_rem, &
-!$OMP                                  visc_rem_v,dt,US,G,GV,CS,local_specified_BC,OBC,vhbt, &
-!$OMP                                  set_BT_cont,CFL_dt,I_dt,v_cor,BT_cont, local_Flather_OBC ) &
-!$OMP                          private(do_I,dvhdv,dv,dv_max_CFL,dv_min_CFL,vh_tot_0,    &
-!$OMP                                  dvhdv_tot_0,visc_rem_max,I_vrm,dv_lim,dy_N,      &
-!$OMP                                  is_simple,FAvi,dy_S,any_simple_OBC ) &
-!$OMP                     firstprivate(visc_rem)
+!NOMP parallel do default(none) shared(ish,ieh,jsh,jeh,nz,v,h_in,h_L,h_R,vh,use_visc_rem, &
+!NOMP                                  visc_rem_v,dt,US,G,GV,CS,local_specified_BC,OBC,vhbt, &
+!NOMP                                  set_BT_cont,CFL_dt,I_dt,v_cor,BT_cont, local_Flather_OBC ) &
+!NOMP                          private(do_I,dvhdv,dv,dv_max_CFL,dv_min_CFL,vh_tot_0,    &
+!NOMP                                  dvhdv_tot_0,visc_rem_max,I_vrm,dv_lim,dy_N,      &
+!NOMP                                  is_simple,FAvi,dy_S,any_simple_OBC ) &
+!NOMP                     firstprivate(visc_rem)
   do J=jsh-1,jeh
     do i=ish,ieh ; do_I(i) = .true. ; visc_rem_max(I) = 0.0 ; enddo
     ! This sets vh and dvhdv.
@@ -1410,7 +1422,7 @@ subroutine merid_face_thickness(v, h, h_L, h_R, h_v, dt, G, US, LB, vol_CFL, &
   integer :: i, j, k, ish, ieh, jsh, jeh, n, nz
   ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = G%ke
 
-  !$OMP parallel do default(shared) private(CFL,curv_3,h_marg,h_avg)
+  !NOMP parallel do default(shared) private(CFL,curv_3,h_marg,h_avg)
   do k=1,nz ; do J=jsh-1,jeh ; do i=ish,ieh
     if (v(i,J,k) > 0.0) then
       if (vol_CFL) then ; CFL = (v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j))
@@ -1440,7 +1452,7 @@ subroutine merid_face_thickness(v, h, h_L, h_R, h_v, dt, G, US, LB, vol_CFL, &
   enddo ; enddo ; enddo
 
   if (present(visc_rem_v)) then
-    !$OMP parallel do default(shared)
+    !NOMP parallel do default(shared)
     do k=1,nz ; do J=jsh-1,jeh ; do i=ish,ieh
       h_v(i,J,k) = h_v(i,J,k) * visc_rem_v(i,J,k)
     enddo ; enddo ; enddo
