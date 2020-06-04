@@ -41,7 +41,7 @@ module MOM_generic_tracer
   use MOM_tracer_initialization_from_Z, only : MOM_initialize_tracer_from_Z
   use MOM_unit_scaling, only : unit_scale_type
   use MOM_variables, only : surface, thermo_var_ptrs
-  use MOM_open_boundary, only : ocean_OBC_type
+  use MOM_open_boundary, only : ocean_OBC_type, register_obgc_segments, fill_obgc_segments 
   use MOM_verticalGrid, only : verticalGrid_type
 
 
@@ -69,7 +69,7 @@ module MOM_generic_tracer
      type(diag_ctrl), pointer :: diag => NULL() ! A structure that is used to
                                    ! regulate the timing of diagnostic output.
      type(MOM_restart_CS), pointer :: restart_CSp => NULL()
-
+     type(ocean_OBC_type), pointer :: OBC => NULL()
      !   The following pointer will be directed to the first element of the
      ! linked list of generic tracers.
      type(g_tracer_type), pointer :: g_tracer_list => NULL()
@@ -86,7 +86,7 @@ contains
   !> Initializes the generic tracer packages and adds their tracers to the list
   !! Adds the tracers in the list of generic tracers to the set of MOM tracers (i.e., MOM-register them)
   !! Register these tracers for restart
-  function register_MOM_generic_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
+  function register_MOM_generic_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS, OBC)
     type(hor_index_type),       intent(in)   :: HI         !< Horizontal index ranges
     type(verticalGrid_type),    intent(in)   :: GV         !< The ocean's vertical grid structure
     type(param_file_type),      intent(in)   :: param_file !< A structure to parse for run-time parameters
@@ -94,6 +94,8 @@ contains
     type(tracer_registry_type), pointer      :: tr_Reg     !< Pointer to the control structure for the tracer
                                                            !! advection and diffusion module.
     type(MOM_restart_CS),       pointer      :: restart_CS !< Pointer to the restart control structure.
+    type(ocean_OBC_type),       pointer      :: OBC        !< This open boundary condition type specifies whether,
+                                                           !! where, and what open boundary conditions are used.
 
 ! Local variables
     logical :: register_MOM_generic_tracer
@@ -149,7 +151,7 @@ contains
                  "restart files of a restarted run.", default=.false.)
 
     CS%restart_CSp => restart_CS
-
+    CS%OBC => OBC
 
     ntau=1 ! MOM needs the fields at only one time step
 
@@ -195,6 +197,8 @@ contains
                               name=g_tracer_name, longname=longname, units=units, &
                               registry_diags=.false., &   !### CHANGE TO TRUE?
                               restart_CS=restart_CS, mandatory=.not.CS%tracers_may_reinit)
+         if (associated(CS%OBC)) &
+           call register_obgc_segments(GV, CS%OBC, tr_Reg, param_file, g_tracer_name)
        else
          call register_restart_field(tr_ptr, g_tracer_name, .not.CS%tracers_may_reinit, &
                                      restart_CS, longname=longname, units=units)
@@ -219,7 +223,7 @@ contains
   !!
   !!   This subroutine initializes the NTR tracer fields in tr(:,:,:,:)
   !! and it sets up the tracer output.
-  subroutine initialize_MOM_generic_tracer(restart, day, G, GV, US, h, param_file, diag, OBC, CS, &
+  subroutine initialize_MOM_generic_tracer(restart, day, G, GV, US, h, param_file, diag, CS, &
                                           sponge_CSp, ALE_sponge_CSp)
     logical,                               intent(in) :: restart !< .true. if the fields have already been
                                                                  !! read from a restart file.
@@ -230,8 +234,6 @@ contains
     real, dimension(SZI_(G),SZJ_(G),SZK_(G)), intent(in) :: h    !< Layer thicknesses [H ~> m or kg m-2]
     type(param_file_type),                 intent(in) :: param_file !< A structure to parse for run-time parameters
     type(diag_ctrl),               target, intent(in) :: diag    !< Regulates diagnostic output.
-    type(ocean_OBC_type),                  pointer    :: OBC     !< This open boundary condition type specifies whether,
-                                                                 !! where, and what open boundary conditions are used.
     type(MOM_generic_tracer_CS),           pointer    :: CS      !< Pointer to the control structure for this module.
     type(sponge_CS),                       pointer    :: sponge_CSp !< Pointer to the control structure for the sponges.
     type(ALE_sponge_CS),                   pointer    :: ALE_sponge_CSp !< Pointer  to the control structure for the
@@ -340,6 +342,7 @@ contains
        endif
       endif
 
+      call fill_obgc_segments(G, CS%OBC, tr_ptr, g_tracer_name)
       !traverse the linked list till hit NULL
       call g_tracer_get_next(g_tracer, g_tracer_next)
       if (.NOT. associated(g_tracer_next)) exit
