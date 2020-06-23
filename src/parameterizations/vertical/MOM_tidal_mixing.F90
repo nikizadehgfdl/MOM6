@@ -249,8 +249,13 @@ logical function tidal_mixing_init(Time, G, GV, US, param_file, diag, CS)
   CS%diag => diag
 
   ! Read parameters
+  call get_param(param_file, mdl, "USE_CVMix_TIDAL", CS%use_CVMix_tidal, &
+                 default=.false., do_not_log=.true.)
+  call get_param(param_file, mdl, "INT_TIDE_DISSIPATION", CS%int_tide_dissipation, &
+                 default=CS%use_CVMix_tidal, do_not_log=.true.)
   call log_version(param_file, mdl, version, &
-    "Vertical Tidal Mixing Parameterization")
+                 "Vertical Tidal Mixing Parameterization", &
+                 all_default=.not.(CS%use_CVMix_tidal .or. CS%int_tide_dissipation))
   call get_param(param_file, mdl, "USE_CVMix_TIDAL", CS%use_CVMix_tidal, &
                  "If true, turns on tidal mixing via CVMix", &
                  default=.false.)
@@ -268,7 +273,7 @@ logical function tidal_mixing_init(Time, G, GV, US, param_file, diag, CS)
 
   call get_param(param_file, mdl, "DEFAULT_2018_ANSWERS", default_2018_answers, &
                  "This sets the default value for the various _2018_ANSWERS parameters.", &
-                 default=.true.)
+                 default=.false.)
   call get_param(param_file, mdl, "TIDAL_MIXING_2018_ANSWERS", CS%answers_2018, &
                  "If true, use the order of arithmetic and expressions that recover the "//&
                  "answers from the end of 2018.  Otherwise, use updated and more robust "//&
@@ -440,7 +445,7 @@ logical function tidal_mixing_init(Time, G, GV, US, param_file, diag, CS)
     call get_param(param_file, mdl, "TKE_ITIDE_MAX", CS%TKE_itide_max, &
                  "The maximum internal tide energy source available to mix "//&
                  "above the bottom boundary layer with INT_TIDE_DISSIPATION.", &
-                 units="W m-2",  default=1.0e3, scale=US%kg_m3_to_R*US%m_to_Z**3*US%T_to_s**3)
+                 units="W m-2", default=1.0e3, scale=US%W_m2_to_RZ3_T3)
 
     call get_param(param_file, mdl, "READ_TIDEAMP", read_tideamp, &
                  "If true, read a file (given by TIDEAMP_FILE) containing "//&
@@ -509,8 +514,7 @@ logical function tidal_mixing_init(Time, G, GV, US, param_file, diag, CS)
                    filename)
     call safe_alloc_ptr(CS%TKE_Niku,is,ie,js,je) ; CS%TKE_Niku(:,:) = 0.0
     call MOM_read_data(filename, 'TKE_input', CS%TKE_Niku, G%domain, timelevel=1, &  ! ??? timelevel -aja
-                       scale=US%kg_m3_to_R*US%m_to_Z**3*US%T_to_s**3)
-    CS%TKE_Niku(:,:) = Niku_scale * CS%TKE_Niku(:,:)
+                       scale=Niku_scale*US%W_m2_to_RZ3_T3)
 
     call get_param(param_file, mdl, "GAMMA_NIKURASHIN",CS%Gamma_lee, &
                  "The fraction of the lee wave energy that is dissipated "//&
@@ -590,7 +594,7 @@ logical function tidal_mixing_init(Time, G, GV, US, param_file, diag, CS)
 
     if (CS%use_CVMix_tidal) then
       CS%id_N2_int = register_diag_field('ocean_model','N2_int',diag%axesTi,Time, &
-          'Bouyancy frequency squared, at interfaces', 's-2') !###, conversion=US%s_to_T**2)
+          'Bouyancy frequency squared, at interfaces', 's-2', conversion=US%s_to_T**2)
       !> TODO: add units
       CS%id_Simmons_coeff = register_diag_field('ocean_model','Simmons_coeff',diag%axesT1,Time, &
            'time-invariant portion of the tidal mixing coefficient using the Simmons', '')
@@ -781,7 +785,7 @@ subroutine calculate_CVMix_tidal(h, j, G, GV, US, CS, N2_int, Kd_lay, Kv)
 
 
       ! XXX: Temporary de-scaling of N2_int(i,:) into a temporary variable
-      do k = 1,G%ke+1
+      do k=1,G%ke+1
         N2_int_i(k) = US%s_to_T**2 * N2_int(i,k)
       enddo
 
@@ -876,7 +880,7 @@ subroutine calculate_CVMix_tidal(h, j, G, GV, US, CS, N2_int, Kd_lay, Kv)
                                           CVmix_tidal_params_user = CS%CVMix_tidal_params)
 
       ! XXX: Temporary de-scaling of N2_int(i,:) into a temporary variable
-      do k = 1,G%ke+1
+      do k=1,G%ke+1
         N2_int_i(k) = US%s_to_T**2 * N2_int(i,k)
       enddo
 

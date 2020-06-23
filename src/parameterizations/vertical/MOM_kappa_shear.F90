@@ -14,7 +14,7 @@ use MOM_grid, only : ocean_grid_type
 use MOM_unit_scaling, only : unit_scale_type
 use MOM_variables, only : thermo_var_ptrs
 use MOM_verticalGrid, only : verticalGrid_type
-use MOM_EOS, only : calculate_density, calculate_density_derivs
+use MOM_EOS, only : calculate_density_derivs
 
 implicit none ; private
 
@@ -119,7 +119,7 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
   type(thermo_var_ptrs),   intent(in)    :: tv     !< A structure containing pointers to any
                                                    !! available thermodynamic fields. Absent fields
                                                    !! have NULL ptrs.
-  real, dimension(:,:),    pointer       :: p_surf !< The pressure at the ocean surface [Pa] (or NULL).
+  real, dimension(:,:),    pointer       :: p_surf !< The pressure at the ocean surface [R L2 T-2 ~> Pa] (or NULL).
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
                            intent(inout) :: kappa_io !< The diapycnal diffusivity at each interface
                                                    !! (not layer!) [Z2 T-1 ~> m2 s-1].  Initially this is the
@@ -160,7 +160,7 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
     kappa_avg, & ! The time-weighted average of kappa [Z2 T-1 ~> m2 s-1].
     tke_avg     ! The time-weighted average of TKE [Z2 T-2 ~> m2 s-2].
   real :: f2   ! The squared Coriolis parameter of each column [T-2 ~> s-2].
-  real :: surface_pres  ! The top surface pressure [Pa].
+  real :: surface_pres  ! The top surface pressure [R L2 T-2 ~> Pa].
 
   real :: dz_in_lay     !   The running sum of the thickness in a layer [Z ~> m].
   real :: k0dt          ! The background diffusivity times the timestep [Z2 ~> m2].
@@ -389,7 +389,7 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
   type(thermo_var_ptrs),   intent(in)    :: tv     !< A structure containing pointers to any
                                                    !! available thermodynamic fields. Absent fields
                                                    !! have NULL ptrs.
-  real, dimension(:,:),    pointer       :: p_surf !< The pressure at the ocean surface [Pa]
+  real, dimension(:,:),    pointer       :: p_surf !< The pressure at the ocean surface [R L2 T-2 ~> Pa]
                                                    !! (or NULL).
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
                            intent(out)   :: kappa_io !< The diapycnal diffusivity at each interface
@@ -430,7 +430,7 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
     kappa_avg, & ! The time-weighted average of kappa [Z2 T-1 ~> m2 s-1].
     tke_avg     ! The time-weighted average of TKE [Z2 T-2 ~> m2 s-2].
   real :: f2   ! The squared Coriolis parameter of each column [T-2 ~> s-2].
-  real :: surface_pres  ! The top surface pressure [Pa].
+  real :: surface_pres  ! The top surface pressure [R L2 T-2 ~> Pa].
 
   real :: dz_in_lay     !   The running sum of the thickness in a layer [Z ~> m].
   real :: k0dt          ! The background diffusivity times the timestep [Z2 ~> m2].
@@ -661,7 +661,7 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
 
   if (CS%debug) then
     call hchksum(kappa_io, "kappa", G%HI, scale=US%Z2_T_to_m2_s)
-    call Bchksum(tke_io, "tke", G%HI)
+    call Bchksum(tke_io, "tke", G%HI, scale=US%Z_to_m**2*US%s_to_T**2)
   endif
 
   if (CS%id_Kd_shear > 0) call post_data(CS%id_Kd_shear, kappa_io, CS%diag)
@@ -679,7 +679,6 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
                               dz, u0xdz, v0xdz, T0xdz, S0xdz, kappa_avg, &
                               tke_avg, tv, CS, GV, US, I_Ld2_1d, dz_Int_1d)
   type(verticalGrid_type), intent(in)    :: GV !< The ocean's vertical grid structure.
-  type(unit_scale_type),   intent(in)    :: US !< A dimensional unit scaling type
   real, dimension(SZK_(GV)+1), &
                      intent(inout) :: kappa !< The time-weighted average of kappa [Z2 T-1 ~> m2 s-1].
   real, dimension(SZK_(GV)+1), &
@@ -687,7 +686,7 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
                                            !! an interface [Z2 T-2 ~> m2 s-2].
   integer,           intent(in)    :: nzc  !< The number of active layers in the column.
   real,              intent(in)    :: f2   !< The square of the Coriolis parameter [T-2 ~> s-2].
-  real,              intent(in)    :: surface_pres  !< The surface pressure [Pa].
+  real,              intent(in)    :: surface_pres  !< The surface pressure [R L2 T-2 ~> Pa].
   real, dimension(SZK_(GV)), &
                      intent(in)    :: dz   !< The layer thickness [Z ~> m].
   real, dimension(SZK_(GV)), &
@@ -708,6 +707,7 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
                                                !! have NULL ptrs.
   type(Kappa_shear_CS),    pointer       :: CS !< The control structure returned by a previous
                                                !! call to kappa_shear_init.
+  type(unit_scale_type),   intent(in)    :: US !< A dimensional unit scaling type
   real,  dimension(SZK_(GV)+1), &
            optional, intent(out)   :: I_Ld2_1d !< The inverse of the squared mixing length [Z-2 ~> m-2].
   real,  dimension(SZK_(GV)+1), &
@@ -741,15 +741,15 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
     kappa_mid, & ! The average of the initial and predictor estimates of kappa [Z2 T-1 ~> m2 s-1].
     tke_pred, & ! The value of TKE from a predictor step [Z2 T-2 ~> m2 s-2].
     kappa_pred, & ! The value of kappa from a predictor step [Z2 T-1 ~> m2 s-1].
-    pressure, & ! The pressure at an interface [Pa].
+    pressure, & ! The pressure at an interface [R L2 T-2 ~> Pa].
     T_int, &    ! The temperature interpolated to an interface [degC].
     Sal_int, &  ! The salinity interpolated to an interface [ppt].
     dbuoy_dT, & ! The partial derivatives of buoyancy with changes in temperature
     dbuoy_dS, & ! and salinity, [Z T-2 degC-1 ~> m s-2 degC-1] and [Z T-2 ppt-1 ~> m s-2 ppt-1].
     I_L2_bdry, &   ! The inverse of the square of twice the harmonic mean
                    ! distance to the top and bottom boundaries [Z-2 ~> m-2].
-    K_Q, &         ! Diffusivity divided by TKE [Z2 m-2 s2 T-1 ~> s].
-    K_Q_tmp, &     ! A temporary copy of diffusivity divided by TKE [Z2 m-2 s2 T-1 ~> s].
+    K_Q, &         ! Diffusivity divided by TKE [T ~> s].
+    K_Q_tmp, &     ! A temporary copy of diffusivity divided by TKE [T ~> s].
     local_src_avg, & ! The time-integral of the local source [nondim].
     tol_min, & ! Minimum tolerated ksrc for the corrector step [T-1 ~> s-1].
     tol_max, & ! Maximum tolerated ksrc for the corrector step [T-1 ~> s-1].
@@ -762,8 +762,8 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
   real :: b1            ! The inverse of the pivot in the tridiagonal equations.
   real :: bd1           ! A term in the denominator of b1.
   real :: d1            ! 1 - c1 in the tridiagonal equations.
-  real :: gR0           ! A conversion factor from Z to Pa equal to Rho_0 times g
-                        ! [Pa Z-1 = kg m-1 s-2 Z-1 ~> kg m-2 s-2].
+  real :: gR0           ! A conversion factor from Z to pressure, given by Rho_0 times g
+                        ! [R L2 T-2 Z-1 ~> kg m-2 s-2].
   real :: g_R0          ! g_R0 is a rescaled version of g/Rho [Z R-1 T-2 ~> m4 kg-1 s-2].
   real :: Norm          ! A factor that normalizes two weights to 1 [Z-2 ~> m-2].
   real :: tol_dksrc     ! Tolerance for the change in the kappa source within an iteration
@@ -813,7 +813,7 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
 #endif
 
   Ri_crit = CS%Rino_crit
-  gR0 = GV%z_to_H*GV%H_to_Pa
+  gR0 = GV%Rho0 * GV%g_Earth
   g_R0 = (US%L_to_Z**2 * GV%g_Earth) / (GV%Rho0)
   k0dt = dt*CS%kappa_0
 
@@ -910,8 +910,8 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
       T_int(K) = 0.5*(T(k-1) + T(k))
       Sal_int(K) = 0.5*(Sal(k-1) + Sal(k))
     enddo
-    call calculate_density_derivs(T_int, Sal_int, pressure, dbuoy_dT, &
-                                  dbuoy_dS, 2, nzc-1, tv%eqn_of_state, scale=-g_R0*US%kg_m3_to_R)
+    call calculate_density_derivs(T_int, Sal_int, pressure, dbuoy_dT, dbuoy_dS, &
+                                  tv%eqn_of_state, (/2,nzc/), scale=-g_R0 )
   else
     do K=1,nzc+1 ; dbuoy_dT(K) = -g_R0 ; dbuoy_dS(K) = 0.0 ; enddo
   endif
@@ -1388,7 +1388,7 @@ subroutine find_kappa_tke(N2, S2, kappa_in, Idz, dz_Int, I_L2_bdry, f2, &
   type(unit_scale_type), intent(in)    :: US  !< A dimensional unit scaling type
   real, dimension(nz+1), intent(inout) :: K_Q !< The shear-driven diapycnal diffusivity divided by
                                               !! the turbulent kinetic energy per unit mass at
-                                              !! interfaces [Z2 m-2 s2 T-1 ~> s].
+                                              !! interfaces [T ~> s].
   real, dimension(nz+1), intent(out)   :: tke !< The turbulent kinetic energy per unit mass at
                                               !! interfaces [Z2 T-2 ~> m2 s-2].
   real, dimension(nz+1), intent(out)   :: kappa  !< The diapycnal diffusivity at interfaces
@@ -1975,8 +1975,9 @@ function kappa_shear_init(Time, G, GV, US, param_file, diag, CS)
 
   ! Local variables
   logical :: merge_mixedlayer
-! This include declares and sets the variable "version".
-#include "version_variable.h"
+  logical :: just_read ! If true, this module is not used, so only read the parameters.
+  ! This include declares and sets the variable "version".
+# include "version_variable.h"
   character(len=40)  :: mdl = "MOM_kappa_shear"  ! This module's name.
   real :: kappa_0_unscaled  ! The value of kappa_0 in MKS units [m2 s-1]
   real :: KD_normal ! The KD of the main model, read here only as a parameter
@@ -1999,68 +2000,72 @@ function kappa_shear_init(Time, G, GV, US, param_file, diag, CS)
   ! subgridscale inhomogeneity into account.
 
 ! Set default, read and log parameters
+  call get_param(param_file, mdl, "USE_JACKSON_PARAM", kappa_shear_init, default=.false., do_not_log=.true.)
   call log_version(param_file, mdl, version, &
-    "Parameterization of shear-driven turbulence following Jackson, Hallberg and Legg, JPO 2008")
+    "Parameterization of shear-driven turbulence following Jackson, Hallberg and Legg, JPO 2008", &
+    log_to_all=.true., debugging=kappa_shear_init, all_default=.not.kappa_shear_init)
   call get_param(param_file, mdl, "USE_JACKSON_PARAM", kappa_shear_init, &
                  "If true, use the Jackson-Hallberg-Legg (JPO 2008) "//&
                  "shear mixing parameterization.", default=.false.)
+  just_read = .not.kappa_shear_init
   call get_param(param_file, mdl, "VERTEX_SHEAR", CS%KS_at_vertex, &
                  "If true, do the calculations of the shear-driven mixing "//&
                  "at the cell vertices (i.e., the vorticity points).", &
-                 default=.false.)
+                 default=.false., do_not_log=just_read)
   call get_param(param_file, mdl, "RINO_CRIT", CS%RiNo_crit, &
                  "The critical Richardson number for shear mixing.", &
-                 units="nondim", default=0.25)
+                 units="nondim", default=0.25, do_not_log=just_read)
   call get_param(param_file, mdl, "SHEARMIX_RATE", CS%Shearmix_rate, &
                  "A nondimensional rate scale for shear-driven entrainment. "//&
                  "Jackson et al find values in the range of 0.085-0.089.", &
-                 units="nondim", default=0.089)
+                 units="nondim", default=0.089, do_not_log=just_read)
   call get_param(param_file, mdl, "MAX_RINO_IT", CS%max_RiNo_it, &
                  "The maximum number of iterations that may be used to "//&
                  "estimate the Richardson number driven mixing.", &
-                 units="nondim", default=50)
-  call get_param(param_file, mdl, "KD", KD_normal, default=1.0e-7, do_not_log=.true.)
+                 units="nondim", default=50, do_not_log=just_read)
+  call get_param(param_file, mdl, "KD", KD_normal, default=0.0, do_not_log=.true.)
   call get_param(param_file, mdl, "KD_KAPPA_SHEAR_0", CS%kappa_0, &
                  "The background diffusivity that is used to smooth the "//&
                  "density and shear profiles before solving for the "//&
-                 "diffusivities. Defaults to value of KD.", &
-                 units="m2 s-1", default=KD_normal, scale=US%m2_s_to_Z2_T, unscaled=kappa_0_unscaled)
+                 "diffusivities.  The default is the greater of KD and 1e-7 m2 s-1.", &
+                 units="m2 s-1", default=max(KD_normal, 1.0e-7), scale=US%m2_s_to_Z2_T, &
+                 unscaled=kappa_0_unscaled, do_not_log=just_read)
   call get_param(param_file, mdl, "KD_TRUNC_KAPPA_SHEAR", CS%kappa_trunc, &
                  "The value of shear-driven diffusivity that is considered negligible "//&
                  "and is rounded down to 0. The default is 1% of KD_KAPPA_SHEAR_0.", &
-                 units="m2 s-1", default=0.01*kappa_0_unscaled, scale=US%m2_s_to_Z2_T)
+                 units="m2 s-1", default=0.01*kappa_0_unscaled, scale=US%m2_s_to_Z2_T, do_not_log=just_read)
   call get_param(param_file, mdl, "FRI_CURVATURE", CS%FRi_curvature, &
                  "The nondimensional curvature of the function of the "//&
                  "Richardson number in the kappa source term in the "//&
-                 "Jackson et al. scheme.", units="nondim", default=-0.97)
+                 "Jackson et al. scheme.", units="nondim", default=-0.97, do_not_log=just_read)
   call get_param(param_file, mdl, "TKE_N_DECAY_CONST", CS%C_N, &
                  "The coefficient for the decay of TKE due to "//&
                  "stratification (i.e. proportional to N*tke). "//&
                  "The values found by Jackson et al. are 0.24-0.28.", &
-                 units="nondim", default=0.24)
+                 units="nondim", default=0.24, do_not_log=just_read)
 !  call get_param(param_file, mdl, "LAYER_KAPPA_STAGGER", CS%layer_stagger, &
-!                 default=.false.)
+!                 default=.false., do_not_log=just_read)
   call get_param(param_file, mdl, "TKE_SHEAR_DECAY_CONST", CS%C_S, &
                  "The coefficient for the decay of TKE due to shear (i.e. "//&
                  "proportional to |S|*tke). The values found by Jackson "//&
-                 "et al. are 0.14-0.12.", units="nondim", default=0.14)
+                 "et al. are 0.14-0.12.", units="nondim", default=0.14, do_not_log=just_read)
   call get_param(param_file, mdl, "KAPPA_BUOY_SCALE_COEF", CS%lambda, &
                  "The coefficient for the buoyancy length scale in the "//&
                  "kappa equation.  The values found by Jackson et al. are "//&
-                 "in the range of 0.81-0.86.", units="nondim", default=0.82)
+                 "in the range of 0.81-0.86.", units="nondim", default=0.82, do_not_log=just_read)
   call get_param(param_file, mdl, "KAPPA_N_OVER_S_SCALE_COEF2", CS%lambda2_N_S, &
                  "The square of the ratio of the coefficients of the "//&
                  "buoyancy and shear scales in the diffusivity equation, "//&
                  "Set this to 0 (the default) to eliminate the shear scale. "//&
                  "This is only used if USE_JACKSON_PARAM is true.", &
-                 units="nondim", default=0.0)
+                 units="nondim", default=0.0, do_not_log=just_read)
   call get_param(param_file, mdl, "KAPPA_SHEAR_TOL_ERR", CS%kappa_tol_err, &
                  "The fractional error in kappa that is tolerated. "//&
                  "Iteration stops when changes between subsequent "//&
                  "iterations are smaller than this everywhere in a "//&
                  "column.  The peak diffusivities usually converge most "//&
                  "rapidly, and have much smaller errors than this.", &
-                 units="nondim", default=0.1)
+                 units="nondim", default=0.1, do_not_log=just_read)
   call get_param(param_file, mdl, "TKE_BACKGROUND", CS%TKE_bg, &
                  "A background level of TKE used in the first iteration "//&
                  "of the kappa equation.  TKE_BACKGROUND could be 0.", &
@@ -2070,40 +2075,40 @@ function kappa_shear_init(Time, G, GV, US, param_file, diag, CS)
                  "massive layers in this calculation.  The default is "//&
                  "true and I can think of no good reason why it should "//&
                  "be false. This is only used if USE_JACKSON_PARAM is true.", &
-                 default=.true.)
+                 default=.true., do_not_log=just_read)
   call get_param(param_file, mdl, "MAX_KAPPA_SHEAR_IT", CS%max_KS_it, &
                  "The maximum number of iterations that may be used to "//&
                  "estimate the time-averaged diffusivity.", units="nondim", &
-                 default=13)
+                 default=13, do_not_log=just_read)
   call get_param(param_file, mdl, "PRANDTL_TURB", CS%Prandtl_turb, &
-                 "The turbulent Prandtl number applied to shear "//&
-                 "instability.", units="nondim", default=1.0, do_not_log=.true.)
+                 "The turbulent Prandtl number applied to shear instability.", &
+                 units="nondim", default=1.0, do_not_log=.true.)
   call get_param(param_file, mdl, "VEL_UNDERFLOW", CS%vel_underflow, &
-                 "A negligibly small velocity magnitude below which velocity "//&
-                 "components are set to 0.  A reasonable value might be "//&
-                 "1e-30 m/s, which is less than an Angstrom divided by "//&
-                 "the age of the universe.", units="m s-1", default=0.0, scale=US%m_s_to_L_T)
+                 "A negligibly small velocity magnitude below which velocity components are set "//&
+                 "to 0.  A reasonable value might be 1e-30 m/s, which is less than an "//&
+                 "Angstrom divided by the age of the universe.", &
+                 units="m s-1", default=0.0, scale=US%m_s_to_L_T, do_not_log=just_read)
   call get_param(param_file, mdl, "KAPPA_SHEAR_MAX_KAP_SRC_CHG", CS%kappa_src_max_chg, &
                  "The maximum permitted increase in the kappa source within an iteration relative "//&
                  "to the local source; this must be greater than 1.  The lower limit for the "//&
                  "permitted fractional decrease is (1 - 0.5/kappa_src_max_chg).  These limits "//&
                  "could perhaps be made dynamic with an improved iterative solver.", &
-                 default=10.0, units="nondim")
+                 default=10.0, units="nondim", do_not_log=just_read)
 
   call get_param(param_file, mdl, "DEBUG_KAPPA_SHEAR", CS%debug, &
                  "If true, write debugging data for the kappa-shear code. \n"//&
                  "Caution: this option is _very_ verbose and should only "//&
                  "be used in single-column mode!", &
-                 default=.false., debuggingParam=.true.)
+                 default=.false., debuggingParam=.true., do_not_log=just_read)
   call get_param(param_file, mdl, "KAPPA_SHEAR_ITER_BUG", CS%dKdQ_iteration_bug, &
                  "If true, use an older, dimensionally inconsistent estimate of the "//&
                  "derivative of diffusivity with energy in the Newton's method iteration.  "//&
-                 "The bug causes undercorrections when dz > 1 m.", default=.true.)
+                 "The bug causes undercorrections when dz > 1 m.", default=.false., do_not_log=just_read)
   call get_param(param_file, mdl, "KAPPA_SHEAR_ALL_LAYER_TKE_BUG", CS%all_layer_TKE_bug, &
                  "If true, report back the latest estimate of TKE instead of the time average "//&
                  "TKE when there is mass in all layers.  Otherwise always report the time "//&
                  "averaged TKE, as is currently done when there are some massless layers.", &
-                 default=.true.)
+                 default=.false., do_not_log=just_read)
 !    id_clock_KQ = cpu_clock_id('Ocean KS kappa_shear', grain=CLOCK_ROUTINE)
 !    id_clock_avg = cpu_clock_id('Ocean KS avg', grain=CLOCK_ROUTINE)
 !    id_clock_project = cpu_clock_id('Ocean KS project', grain=CLOCK_ROUTINE)
@@ -2112,8 +2117,8 @@ function kappa_shear_init(Time, G, GV, US, param_file, diag, CS)
   CS%nkml = 1
   if (GV%nkml>0) then
     call get_param(param_file, mdl, "KAPPA_SHEAR_MERGE_ML",merge_mixedlayer, &
-                 "If true, combine the mixed layers together before "//&
-                 "solving the kappa-shear equations.", default=.true.)
+                 "If true, combine the mixed layers together before solving the "//&
+                 "kappa-shear equations.", default=.true., do_not_log=just_read)
     if (merge_mixedlayer) CS%nkml = GV%nkml
   endif
 

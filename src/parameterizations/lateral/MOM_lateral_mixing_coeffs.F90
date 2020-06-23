@@ -603,8 +603,10 @@ subroutine calc_Visbeck_coeffs(h, slope_x, slope_y, N2_u, N2_v, G, GV, US, CS)
 
   if (CS%debug) then
     call uvchksum("calc_Visbeck_coeffs slope_[xy]", slope_x, slope_y, G%HI, haloshift=1)
-    call uvchksum("calc_Visbeck_coeffs N2_u, N2_v", N2_u, N2_v, G%HI, scale=US%s_to_T**2)
-    call uvchksum("calc_Visbeck_coeffs SN_[uv]", CS%SN_u, CS%SN_v, G%HI, scale=US%s_to_T)
+    call uvchksum("calc_Visbeck_coeffs N2_u, N2_v", N2_u, N2_v, G%HI, &
+                  scale=US%s_to_T**2, scalar_pair=.true.)
+    call uvchksum("calc_Visbeck_coeffs SN_[uv]", CS%SN_u, CS%SN_v, G%HI, &
+                  scale=US%s_to_T, scalar_pair=.true.)
   endif
 
 end subroutine calc_Visbeck_coeffs
@@ -923,8 +925,12 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
   real :: Leith_Lap_const      ! The non-dimensional coefficient in the Leith viscosity
   real :: grid_sp_u2, grid_sp_v2 ! Intermediate quantities for Leith metrics [L2 ~> m2]
   real :: grid_sp_u3, grid_sp_v3 ! Intermediate quantities for Leith metrics [L3 ~> m3]
+  real :: wave_speed_min      ! A floor in the first mode speed below which 0 is returned [L T-1 ~> m s-1]
+  real :: wave_speed_tol      ! The fractional tolerance for finding the wave speeds [nondim]
+  logical :: better_speed_est ! If true, use a more robust estimate of the first
+                              ! mode wave speed as the starting point for iterations.
 ! This include declares and sets the variable "version".
-#include "version_variable.h"
+# include "version_variable.h"
   character(len=40)  :: mdl = "MOM_lateral_mixing_coeffs" ! This module's name.
   integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, i, j
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
@@ -1148,7 +1154,7 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
                  "If true, interpolate the resolution function to the "//&
                  "velocity points from the thickness points; otherwise "//&
                  "interpolate the wave speed and calculate the resolution "//&
-                 "function independently at each point.", default=.true.)
+                 "function independently at each point.", default=.false.)
     if (CS%interpolate_Res_fn) then
       if (CS%Res_coef_visc /= CS%Res_coef_khth) call MOM_error(FATAL, &
            "MOM_lateral_mixing_coeffs.F90, VarMix_init:"//&
@@ -1157,13 +1163,12 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
            "MOM_lateral_mixing_coeffs.F90, VarMix_init:"//&
            "When INTERPOLATE_RES_FN=True, VISC_RES_FN_POWER must equal KH_RES_FN_POWER.")
     endif
-    !### Change the default of GILL_EQUATORIAL_LD to True.
     call get_param(param_file, mdl, "GILL_EQUATORIAL_LD", Gill_equatorial_Ld, &
                  "If true, uses Gill's definition of the baroclinic "//&
                  "equatorial deformation radius, otherwise, if false, use "//&
                  "Pedlosky's definition. These definitions differ by a factor "//&
                  "of 2 in front of the beta term in the denominator. Gill's "//&
-                 "is the more appropriate definition.", default=.false.)
+                 "is the more appropriate definition.", default=.true.)
     if (Gill_equatorial_Ld) then
       oneOrTwo = 2.0
     endif
@@ -1242,13 +1247,25 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
     allocate(CS%cg1(isd:ied,jsd:jed)) ; CS%cg1(:,:) = 0.0
     call get_param(param_file, mdl, "DEFAULT_2018_ANSWERS", default_2018_answers, &
                  "This sets the default value for the various _2018_ANSWERS parameters.", &
-                 default=.true.)
+                 default=.false.)
     call get_param(param_file, mdl, "REMAPPING_2018_ANSWERS", remap_answers_2018, &
                  "If true, use the order of arithmetic and expressions that recover the "//&
                  "answers from the end of 2018.  Otherwise, use updated and more robust "//&
                  "forms of the same expressions.", default=default_2018_answers)
+    call get_param(param_file, mdl, "INTERNAL_WAVE_SPEED_TOL", wave_speed_tol, &
+                 "The fractional tolerance for finding the wave speeds.", &
+                 units="nondim", default=0.001)
+    !### Set defaults so that wave_speed_min*wave_speed_tol >= 1e-9 m s-1
+    call get_param(param_file, mdl, "INTERNAL_WAVE_SPEED_MIN", wave_speed_min, &
+                 "A floor in the first mode speed below which 0 used instead.", &
+                 units="m s-1", default=0.0, scale=US%m_s_to_L_T)
+    call get_param(param_file, mdl, "INTERNAL_WAVE_SPEED_BETTER_EST", better_speed_est, &
+                 "If true, use a more robust estimate of the first mode wave speed as the "//&
+                 "starting point for iterations.", default=.false.) !### Change the default.
     call wave_speed_init(CS%wave_speed_CSp, use_ebt_mode=CS%Resoln_use_ebt, &
-                         mono_N2_depth=N2_filter_depth, remap_answers_2018=remap_answers_2018)
+                         mono_N2_depth=N2_filter_depth, remap_answers_2018=remap_answers_2018, &
+                         better_speed_est=better_speed_est, min_speed=wave_speed_min, &
+                         wave_speed_tol=wave_speed_tol)
   endif
 
   ! Leith parameters
