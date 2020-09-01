@@ -110,7 +110,7 @@ contains
 
 ! Local variables
     logical :: register_MOM_generic_tracer
-
+    logical :: obc_has
     character(len=128), parameter :: sub_name = 'register_MOM_generic_tracer'
     character(len=200) :: inputdir ! The directory where NetCDF input files are.
     ! These can be overridden later in via the field manager?
@@ -210,9 +210,12 @@ contains
                               registry_diags=.false., &   !### CHANGE TO TRUE?
                               restart_CS=restart_CS, mandatory=.not.CS%tracers_may_reinit)
          if (associated(CS%OBC)) &
-           call g_tracer_get_obc_segment_props(g_tracer,g_tracer_name,obc_src_file_name,obc_src_field_name)
-           call set_obgc_segments_props(g_tracer_name,obc_src_file_name,obc_src_field_name)
-           call register_obgc_segments(GV, CS%OBC, tr_Reg, param_file, g_tracer_name)
+              call g_tracer_get_obc_segment_props(g_tracer,g_tracer_name,obc_has ,&
+                                                  obc_src_file_name,obc_src_field_name )
+           if(obc_has) then
+              call set_obgc_segments_props(g_tracer_name,obc_src_file_name,obc_src_field_name)
+              call register_obgc_segments(GV, CS%OBC, tr_Reg, param_file, g_tracer_name)
+           endif
        else
          call register_restart_field(tr_ptr, g_tracer_name, .not.CS%tracers_may_reinit, &
                                      restart_CS, longname=longname, units=units)
@@ -254,7 +257,7 @@ contains
                                                                  !! ALE sponges.
 
     character(len=128), parameter :: sub_name = 'initialize_MOM_generic_tracer'
-    logical :: OK
+    logical :: OK,obc_has
     integer :: i, j, k, isc, iec, jsc, jec, nk
     type(g_tracer_type), pointer    :: g_tracer,g_tracer_next
     character(len=fm_string_len)      :: g_tracer_name
@@ -356,7 +359,8 @@ contains
        endif
       endif
 
-      call fill_obgc_segments(G, CS%OBC, tr_ptr, g_tracer_name)
+      call g_tracer_get_obc_segment_props(g_tracer,g_tracer_name,obc_has )
+      if(obc_has) call fill_obgc_segments(G, CS%OBC, tr_ptr, g_tracer_name)
       !traverse the linked list till hit NULL
       call g_tracer_get_next(g_tracer, g_tracer_next)
       if (.NOT. associated(g_tracer_next)) exit
