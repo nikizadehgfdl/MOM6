@@ -13,11 +13,6 @@ module MOM_generic_tracer
 #define _ALLOCATED allocated
 #endif
 
-
-  ! ### These imports should not reach into FMS directly ###
-  use mpp_mod,        only: stdout, mpp_error, FATAL,WARNING,NOTE
-  use field_manager_mod, only: fm_get_index,fm_string_len
-
   use generic_tracer, only: generic_tracer_register, generic_tracer_get_diag_list
   use generic_tracer, only: generic_tracer_init, generic_tracer_source, generic_tracer_register_diag
   use generic_tracer, only: generic_tracer_coupler_get, generic_tracer_coupler_set
@@ -29,7 +24,8 @@ module MOM_generic_tracer
   use g_tracer_utils,   only: g_tracer_get_next,g_tracer_type,g_tracer_is_prog,g_tracer_flux_init
   use g_tracer_utils,   only: g_tracer_send_diag,g_tracer_get_values
   use g_tracer_utils,   only: g_tracer_get_pointer,g_tracer_get_alias,g_tracer_set_csdiag
-
+  use g_tracer_utils,   only: g_tracer_get_obc_segment_props
+  
   use MOM_diag_mediator, only : post_data, register_diag_field, safe_alloc_ptr
   use MOM_diag_mediator, only : diag_ctrl, get_diag_time_end
   use MOM_error_handler, only : MOM_error, FATAL, WARNING, NOTE, is_root_pe
@@ -49,7 +45,8 @@ module MOM_generic_tracer
   use MOM_tracer_initialization_from_Z, only : MOM_initialize_tracer_from_Z
   use MOM_unit_scaling, only : unit_scale_type
   use MOM_variables, only : surface, thermo_var_ptrs
-  use MOM_open_boundary, only : ocean_OBC_type
+  use MOM_open_boundary, only : ocean_OBC_type, register_obgc_segments, fill_obgc_segments
+  use MOM_open_boundary, only : set_obgc_segments_props
   use MOM_verticalGrid, only : verticalGrid_type
 
 
@@ -58,6 +55,7 @@ module MOM_generic_tracer
   !> An state hidden in module data that is very much not allowed in MOM6
   ! ### This needs to be fixed
   logical :: g_registered = .false.
+  integer, parameter :: fm_string_len=128 !>string lengths used in obgc packages
 
   public register_MOM_generic_tracer, initialize_MOM_generic_tracer
   public MOM_generic_tracer_column_physics, MOM_generic_tracer_surface_state
@@ -69,19 +67,22 @@ module MOM_generic_tracer
 
   !> Control structure for generic tracers
   type, public :: MOM_generic_tracer_CS ; private
-     character(len = 200) :: IC_file !< The file in which the generic tracer initial values can
-                                     !! be found, or an empty string for internal initialization.
-     logical :: Z_IC_file !< If true, the generic_tracer IC_file is in Z-space.  The default is false.
-     real :: tracer_IC_val = 0.0    !< The initial value assigned to tracers.
-     real :: tracer_land_val = -1.0 !< The values of tracers used where  land is masked out.
-     logical :: tracers_may_reinit  !< If true, tracers may go through the
-                                    !! initialization code if they are not found in the restart files.
+     character(len = 200) :: IC_file ! The file in which the generic tracer initial values can
+                       ! be found, or an empty string for internal initialization.
+     logical :: Z_IC_file ! If true, the generic_tracer IC_file is in Z-space.  The default is false.
+     real :: tracer_IC_val = 0.0    ! The initial value assigned to tracers.
+     real :: tracer_land_val = -1.0 ! The values of tracers used where  land is masked out.
+     logical :: tracers_may_reinit  ! If true, tracers may go through the
+                              ! initialization code if they are not found in the
+                              ! restart files.
 
-     type(diag_ctrl), pointer :: diag => NULL() !< A structure that is used to
-                                                !! regulate the timing of diagnostic output.
-     type(MOM_restart_CS), pointer :: restart_CSp => NULL() !< Restart control structure
+     type(diag_ctrl), pointer :: diag => NULL() ! A structure that is used to
+                                   ! regulate the timing of diagnostic output.
+     type(MOM_restart_CS), pointer :: restart_CSp => NULL()
+     type(ocean_OBC_type), pointer :: OBC => NULL()
+     !   The following pointer will be directed to the first element of the
+     ! linked list of generic tracers.
 
-     !> Pointer to the first element of the linked list of generic tracers.
      type(g_tracer_type), pointer :: g_tracer_list => NULL()
 
      integer :: H_to_m !< Auxiliary to access GV%H_to_m in routines that do not have access to GV
@@ -96,7 +97,7 @@ contains
   !> Initializes the generic tracer packages and adds their tracers to the list
   !! Adds the tracers in the list of generic tracers to the set of MOM tracers (i.e., MOM-register them)
   !! Register these tracers for restart
-  function register_MOM_generic_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS)
+  function register_MOM_generic_tracer(HI, GV, param_file, CS, tr_Reg, restart_CS, OBC)
     type(hor_index_type),       intent(in)   :: HI         !< Horizontal index ranges
     type(verticalGrid_type),    intent(in)   :: GV         !< The ocean's vertical grid structure
     type(param_file_type),      intent(in)   :: param_file !< A structure to parse for run-time parameters
@@ -104,17 +105,20 @@ contains
     type(tracer_registry_type), pointer      :: tr_Reg     !< Pointer to the control structure for the tracer
                                                            !! advection and diffusion module.
     type(MOM_restart_CS),       pointer      :: restart_CS !< Pointer to the restart control structure.
+    type(ocean_OBC_type),       pointer      :: OBC        !< This open boundary condition type specifies whether,
+                                                           !! where, and what open boundary conditions are used.
 
 ! Local variables
     logical :: register_MOM_generic_tracer
-
-    character(len=fm_string_len), parameter :: sub_name = 'register_MOM_generic_tracer'
+    logical :: obc_has
+    character(len=128), parameter :: sub_name = 'register_MOM_generic_tracer'
     character(len=200) :: inputdir ! The directory where NetCDF input files are.
     ! These can be overridden later in via the field manager?
 
     integer :: ntau, k,i,j,axes(3)
     type(g_tracer_type), pointer      :: g_tracer,g_tracer_next
     character(len=fm_string_len)      :: g_tracer_name,longname,units
+    character(len=fm_string_len)      :: obc_src_file_name,obc_src_field_name
     real, dimension(:,:,:,:), pointer   :: tr_field
     real, dimension(:,:,:), pointer     :: tr_ptr
     real, dimension(HI%isd:HI%ied, HI%jsd:HI%jed,GV%ke)         :: grid_tmask
@@ -122,7 +126,7 @@ contains
 
     register_MOM_generic_tracer = .false.
     if (associated(CS)) then
-       call mpp_error(WARNING, "register_MOM_generic_tracer called with an "// &
+       call MOM_error(WARNING, "register_MOM_generic_tracer called with an "// &
             "associated control structure.")
        return
     endif
@@ -159,7 +163,7 @@ contains
                  "restart files of a restarted run.", default=.false.)
 
     CS%restart_CSp => restart_CS
-
+    CS%OBC => OBC
 
     ntau=1 ! MOM needs the fields at only one time step
 
@@ -185,7 +189,7 @@ contains
 
     !Get the tracer list
     call generic_tracer_get_list(CS%g_tracer_list)
-    if (.NOT. associated(CS%g_tracer_list)) call mpp_error(FATAL, trim(sub_name)//&
+    if (.NOT. associated(CS%g_tracer_list)) call MOM_error(FATAL, trim(sub_name)//&
          ": No tracer in the list.")
     ! For each tracer name get its T_prog index and get its fields
 
@@ -205,6 +209,13 @@ contains
                               name=g_tracer_name, longname=longname, units=units, &
                               registry_diags=.false., &   !### CHANGE TO TRUE?
                               restart_CS=restart_CS, mandatory=.not.CS%tracers_may_reinit)
+         if (associated(CS%OBC)) &
+              call g_tracer_get_obc_segment_props(g_tracer,g_tracer_name,obc_has ,&
+                                                  obc_src_file_name,obc_src_field_name )
+           if(obc_has) then
+              call set_obgc_segments_props(g_tracer_name,obc_src_file_name,obc_src_field_name)
+              call register_obgc_segments(GV, CS%OBC, tr_Reg, param_file, g_tracer_name)
+           endif
        else
          call register_restart_field(tr_ptr, g_tracer_name, .not.CS%tracers_may_reinit, &
                                      restart_CS, longname=longname, units=units)
@@ -229,7 +240,7 @@ contains
   !!
   !!   This subroutine initializes the NTR tracer fields in tr(:,:,:,:)
   !! and it sets up the tracer output.
-  subroutine initialize_MOM_generic_tracer(restart, day, G, GV, US, h, param_file, diag, OBC, CS, &
+  subroutine initialize_MOM_generic_tracer(restart, day, G, GV, US, h, param_file, diag, CS, &
                                           sponge_CSp, ALE_sponge_CSp)
     logical,                               intent(in) :: restart !< .true. if the fields have already been
                                                                  !! read from a restart file.
@@ -240,15 +251,13 @@ contains
     real, dimension(SZI_(G),SZJ_(G),SZK_(G)), intent(in) :: h    !< Layer thicknesses [H ~> m or kg m-2]
     type(param_file_type),                 intent(in) :: param_file !< A structure to parse for run-time parameters
     type(diag_ctrl),               target, intent(in) :: diag    !< Regulates diagnostic output.
-    type(ocean_OBC_type),                  pointer    :: OBC     !< This open boundary condition type specifies whether,
-                                                                 !! where, and what open boundary conditions are used.
     type(MOM_generic_tracer_CS),           pointer    :: CS      !< Pointer to the control structure for this module.
     type(sponge_CS),                       pointer    :: sponge_CSp !< Pointer to the control structure for the sponges.
     type(ALE_sponge_CS),                   pointer    :: ALE_sponge_CSp !< Pointer  to the control structure for the
                                                                  !! ALE sponges.
 
-    character(len=fm_string_len), parameter :: sub_name = 'initialize_MOM_generic_tracer'
-    logical :: OK
+    character(len=128), parameter :: sub_name = 'initialize_MOM_generic_tracer'
+    logical :: OK,obc_has
     integer :: i, j, k, isc, iec, jsc, jec, nk
     type(g_tracer_type), pointer    :: g_tracer,g_tracer_next
     character(len=fm_string_len)      :: g_tracer_name
@@ -265,7 +274,7 @@ contains
 
     CS%diag=>diag
     !Get the tracer list
-    if (.NOT. associated(CS%g_tracer_list)) call mpp_error(FATAL, trim(sub_name)//&
+    if (.NOT. associated(CS%g_tracer_list)) call MOM_error(FATAL, trim(sub_name)//&
          ": No tracer in the list.")
     !For each tracer name get its  fields
     g_tracer=>CS%g_tracer_list
@@ -350,6 +359,8 @@ contains
        endif
       endif
 
+      call g_tracer_get_obc_segment_props(g_tracer,g_tracer_name,obc_has )
+      if(obc_has) call fill_obgc_segments(G, CS%OBC, tr_ptr, g_tracer_name)
       !traverse the linked list till hit NULL
       call g_tracer_get_next(g_tracer, g_tracer_next)
       if (.NOT. associated(g_tracer_next)) exit
@@ -426,7 +437,7 @@ contains
     !     h_new(k) = h_old(k) + ea(k) - eb(k-1) + eb(k) - ea(k+1)
 
     ! Local variables
-    character(len=fm_string_len), parameter :: sub_name = 'MOM_generic_tracer_column_physics'
+    character(len=128), parameter :: sub_name = 'MOM_generic_tracer_column_physics'
 
     type(g_tracer_type), pointer  :: g_tracer, g_tracer_next
     character(len=fm_string_len)  :: g_tracer_name
@@ -443,7 +454,7 @@ contains
     isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; nk = G%ke
 
     !Get the tracer list
-    if (.NOT. associated(CS%g_tracer_list)) call mpp_error(FATAL,&
+    if (.NOT. associated(CS%g_tracer_list)) call MOM_error(FATAL,&
          trim(sub_name)//": No tracer in the list.")
 
 #ifdef _USE_MOM6_DIAG
@@ -587,7 +598,7 @@ contains
     type(g_tracer_type), pointer  :: g_tracer, g_tracer_next
     real, dimension(:,:,:,:), pointer   :: tr_field
     real, dimension(:,:,:), pointer     :: tr_ptr
-    character(len=fm_string_len), parameter :: sub_name = 'MOM_generic_tracer_stock'
+    character(len=128), parameter :: sub_name = 'MOM_generic_tracer_stock'
 
     integer :: i, j, k, is, ie, js, je, nz, m
     is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
@@ -660,7 +671,7 @@ contains
     type(g_tracer_type), pointer  :: g_tracer, g_tracer_next
     real, dimension(:,:,:,:), pointer   :: tr_field
     real, dimension(:,:,:), pointer     :: tr_ptr
-    character(len=fm_string_len), parameter :: sub_name = 'MOM_generic_tracer_min_max'
+    character(len=128), parameter :: sub_name = 'MOM_generic_tracer_min_max'
 
     real, dimension(:,:,:),pointer :: grid_tmask
     integer :: isc,iec,jsc,jec,isd,ied,jsd,jed,nk,ntau
@@ -728,7 +739,7 @@ contains
 ! Local variables
     real :: sosga
 
-    character(len=fm_string_len), parameter :: sub_name = 'MOM_generic_tracer_surface_state'
+    character(len=128), parameter :: sub_name = 'MOM_generic_tracer_surface_state'
     real, dimension(G%isd:G%ied,G%jsd:G%jed,1:G%ke,1) :: rho0
     real, dimension(G%isd:G%ied,G%jsd:G%jed,1:G%ke) ::  dzt
     type(g_tracer_type), pointer :: g_tracer
@@ -750,7 +761,7 @@ contains
          tau=1,sosga=sosga,model_time=get_diag_time_end(CS%diag))
 
     !Output diagnostics via diag_manager for all tracers in this module
-!    if (.NOT. associated(CS%g_tracer_list)) call mpp_error(FATAL, trim(sub_name)//&
+!    if (.NOT. associated(CS%g_tracer_list)) call MOM_error(FATAL, trim(sub_name)//&
 !         "No tracer in the list.")
 !    call g_tracer_send_diag(CS%g_tracer_list, get_diag_time_end(CS%diag), tau=1)
     !Niki: The problem with calling diagnostic outputs here is that this subroutine is called every dt_cpld
@@ -767,7 +778,7 @@ contains
     integer :: ind
     character(len=fm_string_len)   :: g_tracer_name,longname, package,units,old_package,file_in,file_out
     real :: const_init_value
-    character(len=fm_string_len), parameter :: sub_name = 'MOM_generic_flux_init'
+    character(len=128), parameter :: sub_name = 'MOM_generic_flux_init'
     type(g_tracer_type), pointer :: g_tracer_list,g_tracer,g_tracer_next
 
     if (.not. g_registered) then
@@ -777,7 +788,7 @@ contains
 
     call generic_tracer_get_list(g_tracer_list)
     if (.NOT. associated(g_tracer_list)) then
-       call mpp_error(WARNING, trim(sub_name)// ": No generic tracer in the list.")
+       call MOM_error(WARNING, trim(sub_name)// ": No generic tracer in the list.")
        return
     endif
 
@@ -812,7 +823,7 @@ contains
     type(MOM_generic_tracer_CS), pointer :: CS   !< Pointer to the control structure for this module.
 
     real, dimension(:,:,:),   pointer :: array_ptr
-    character(len=fm_string_len), parameter :: sub_name = 'MOM_generic_tracer_get'
+    character(len=128), parameter :: sub_name = 'MOM_generic_tracer_get'
 
     call g_tracer_get_pointer(CS%g_tracer_list,name,member,array_ptr)
     array(:,:,:) = array_ptr(:,:,:)

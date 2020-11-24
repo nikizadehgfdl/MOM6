@@ -847,6 +847,7 @@ subroutine tracer_name_lookup(Reg, tr_ptr, name)
   character(len=32), intent(in)          :: name    !< tracer name
 
   integer n
+  tr_ptr => null()
   do n=1,Reg%ntr
     if (lowercase(Reg%Tr(n)%name) == lowercase(name)) tr_ptr => Reg%Tr(n)
   enddo
@@ -869,7 +870,7 @@ subroutine tracer_registry_init(param_file, Reg)
   else ; return ; endif
 
   ! Read all relevant parameters and write them to the model log.
-  call log_version(param_file, mdl, version, "")
+  call log_version(param_file, mdl, version, "", all_default=.true.)
 
   init_calls = init_calls + 1
   if (init_calls > 1) then
