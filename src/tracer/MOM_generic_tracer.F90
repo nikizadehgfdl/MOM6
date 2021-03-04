@@ -59,7 +59,6 @@ module MOM_generic_tracer
   !> An state hidden in module data that is very much not allowed in MOM6
   ! ### This needs to be fixed
   logical :: g_registered = .false.
-  integer, parameter :: fm_string_len=128 !>string lengths used in obgc packages
 
   public register_MOM_generic_tracer, initialize_MOM_generic_tracer
   public MOM_generic_tracer_column_physics, MOM_generic_tracer_surface_state
@@ -361,7 +360,7 @@ contains
       endif
 
       call g_tracer_get_obc_segment_props(g_tracer,g_tracer_name,obc_has )
-      if(obc_has .and. g_tracer_is_prog(g_tracer)) call fill_obgc_segments(G, CS%OBC, tr_ptr, g_tracer_name)
+      if(obc_has .and. g_tracer_is_prog(g_tracer)) call fill_obgc_segments(G, GV, CS%OBC, tr_ptr, g_tracer_name)
       !traverse the linked list till hit NULL
       call g_tracer_get_next(g_tracer, g_tracer_next)
       if (.NOT. associated(g_tracer_next)) exit
