@@ -3808,11 +3808,9 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: h    !< Thickness [H ~> m or kg m-2]
   type(time_type),                           intent(in)    :: Time !< Model time
   ! Local variables
-==== BASE ====
-  integer :: i, j, k, is, ie, js, je, isd, ied, jsd, jed
-  integer :: IsdB, IedB, JsdB, JedB, n, m, nz
-  character(len=40)  :: mdl = "set_OBC_segment_data" ! This subroutine's name.
-==== BASE ====
+  integer :: c, i, j, k, is, ie, js, je, isd, ied, jsd, jed
+  integer :: IsdB, IedB, JsdB, JedB, n, m, nz, nt, it
+  character(len=40)  :: mdl = "update_OBC_segment_data" ! This subroutine's name.
   character(len=200) :: filename, OBC_file, inputdir ! Strings for file/path
   type(OBC_segment_type), pointer :: segment => NULL()
   integer, dimension(4) :: siz
