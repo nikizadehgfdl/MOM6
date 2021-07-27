@@ -259,6 +259,9 @@ type, public :: MOM_control_struct ; private
                                      !! calculated, and if it is 0, dtbt is calculated every step.
   type(time_type) :: dtbt_reset_interval !< A time_time representation of dtbt_reset_period.
   type(time_type) :: dtbt_reset_time !< The next time DTBT should be calculated.
+  real            :: update_OBC_period!< The time interval between OBC updates
+  type(time_type) :: update_OBC_interval !< A time_time representation of update_OBC_period.
+  type(time_type) :: update_OBC_time !< The next time OBC is applied.
 
 
   real, dimension(:,:,:), pointer :: &
@@ -406,6 +409,7 @@ integer :: id_clock_pass_init  ! also in dynamics d/r
 integer :: id_clock_ALE
 integer :: id_clock_other
 integer :: id_clock_offline_tracer
+integer :: id_clock_unit_tests
 !>@}
 
 contains
@@ -994,7 +998,7 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     call enable_averages(dt_thermo, Time_local+real_to_time(US%T_to_s*(dt_thermo-dt)), CS%diag)
     call cpu_clock_begin(id_clock_thick_diff)
     if (associated(CS%VarMix)) &
-      call calc_slope_functions(h, CS%tv, dt, G, GV, US, CS%VarMix)
+      call calc_slope_functions(h, CS%tv, dt, G, GV, US, CS%VarMix, OBC=CS%OBC)
     call thickness_diffuse(h, CS%uhtr, CS%vhtr, CS%tv, dt_thermo, G, GV, US, &
                            CS%MEKE, CS%VarMix, CS%CDp, CS%thickness_diffuse_CSp)
     call cpu_clock_end(id_clock_thick_diff)
@@ -1020,7 +1024,6 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     call disable_averaging(CS%diag)
   endif
 
-
   if (CS%do_dynamics .and. CS%split) then !--------------------------- start SPLIT
     ! This section uses a split time stepping scheme for the dynamic equations,
     ! basically the stacked shallow water equations with viscosity.
@@ -1034,6 +1037,17 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
       endif
     endif
 
+    !OBC hack
+    if(associated(CS%OBC)) then
+     CS%OBC%update_OBC = .false.
+     if (CS%update_OBC_period == 0.0) CS%OBC%update_OBC = .true.
+     if (CS%update_OBC_period > 0.0) then
+      if (Time_local >= CS%update_OBC_time) then  !### Change >= to > here.
+       CS%OBC%update_OBC = .true.
+       CS%update_OBC_time = CS%update_OBC_time + CS%update_OBC_interval
+      endif
+     endif
+    endif
     call step_MOM_dyn_split_RK2(u, v, h, CS%tv, CS%visc, Time_local, dt, forces, &
                 p_surf_begin, p_surf_end, CS%uh, CS%vh, CS%uhtr, CS%vhtr, &
                 CS%eta_av_bc, G, GV, US, CS%dyn_split_RK2_CSp, calc_dtbt, CS%VarMix, &
@@ -1067,7 +1081,7 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     if (CS%debug) call hchksum(h,"Pre-thickness_diffuse h", G%HI, haloshift=0, scale=GV%H_to_m)
 
     if (associated(CS%VarMix)) &
-      call calc_slope_functions(h, CS%tv, dt, G, GV, US, CS%VarMix)
+      call calc_slope_functions(h, CS%tv, dt, G, GV, US, CS%VarMix, OBC=CS%OBC)
     call thickness_diffuse(h, CS%uhtr, CS%vhtr, CS%tv, dt, G, GV, US, &
                            CS%MEKE, CS%VarMix, CS%CDp, CS%thickness_diffuse_CSp)
 
@@ -1479,7 +1493,7 @@ subroutine step_offline(forces, fluxes, sfc_state, Time_start, time_interval, CS
             call pass_var(CS%h, G%Domain)
             call calc_resoln_function(CS%h, CS%tv, G, GV, US, CS%VarMix)
             call calc_depth_function(G, CS%VarMix)
-            call calc_slope_functions(CS%h, CS%tv, dt_offline, G, GV, US, CS%VarMix)
+            call calc_slope_functions(CS%h, CS%tv, dt_offline, G, GV, US, CS%VarMix, OBC=CS%OBC)
           endif
           call tracer_hordiff(CS%h, dt_offline, CS%MEKE, CS%VarMix, G, GV, US, &
               CS%tracer_diff_CSp, CS%tracer_Reg, CS%tv)
@@ -1505,7 +1519,7 @@ subroutine step_offline(forces, fluxes, sfc_state, Time_start, time_interval, CS
             call pass_var(CS%h, G%Domain)
             call calc_resoln_function(CS%h, CS%tv, G, GV, US, CS%VarMix)
             call calc_depth_function(G, CS%VarMix)
-            call calc_slope_functions(CS%h, CS%tv, dt_offline, G, GV, US, CS%VarMix)
+            call calc_slope_functions(CS%h, CS%tv, dt_offline, G, GV, US, CS%VarMix, OBC=CS%OBC)
           endif
           call tracer_hordiff(CS%h, dt_offline, CS%MEKE, CS%VarMix, G, GV, US, &
               CS%tracer_diff_CSp, CS%tracer_Reg, CS%tv)
@@ -1720,7 +1734,10 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  "If True, exercises unit tests at model start up.", &
                  default=.false., debuggingParam=.true.)
   if (do_unit_tests) then
+    id_clock_unit_tests = cpu_clock_id('(Ocean unit tests)', grain=CLOCK_MODULE)
+    call cpu_clock_begin(id_clock_unit_tests)
     call unit_tests(verbosity)
+    call cpu_clock_end(id_clock_unit_tests)
   endif
 
   call get_param(param_file, "MOM", "SPLIT", CS%split, &
@@ -1876,6 +1893,15 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  "If DTBT_RESET_PERIOD is negative, DTBT is set based "//&
                  "only on information available at initialization.  If 0, "//&
                  "DTBT will be set every dynamics time step. The default "//&
+                 "is set by DT_THERM.  This is only used if SPLIT is true.", &
+                 units="s", default=default_val, do_not_read=(dtbt > 0.0))
+  !OBC hack
+    CS%update_OBC_period = -1.0
+    call get_param(param_file, "MOM", "UPDATE_OBC_PERIOD", CS%update_OBC_period, &
+                 "The period between recalculations OBC updates. "//&
+                 "If DTBT_RESET_PERIOD is negative, DTBT is set based "//&
+                 "only on information available at initialization.  If 0, "//&
+                 "OBC updates every dynamics time step. The default "//&
                  "is set by DT_THERM.  This is only used if SPLIT is true.", &
                  units="s", default=default_val, do_not_read=(dtbt > 0.0))
   endif
@@ -2286,7 +2312,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   ! This subroutine calls user-specified tracer registration routines.
   ! Additional calls can be added to MOM_tracer_flow_control.F90.
   call call_tracer_register(dG%HI, GV, US, param_file, CS%tracer_flow_CSp, &
-                            CS%tracer_Reg, restart_CSp)
+                            CS%tracer_Reg, restart_CSp, CS%OBC)
 
   call MEKE_alloc_register_restart(dG%HI, param_file, CS%MEKE, restart_CSp)
   call set_visc_register_restarts(dG%HI, GV, param_file, CS%visc, restart_CSp)
@@ -2537,7 +2563,6 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   call VarMix_init(Time, G, GV, US, param_file, diag, CS%VarMix)
   call set_visc_init(Time, G, GV, US, param_file, diag, CS%visc, CS%set_visc_CSp, restart_CSp, CS%OBC)
   call thickness_diffuse_init(Time, G, GV, US, param_file, diag, CS%CDp, CS%thickness_diffuse_CSp)
-
   if (CS%split) then
     allocate(eta(SZI_(G),SZJ_(G))) ; eta(:,:) = 0.0
     call initialize_dyn_split_RK2(CS%u, CS%v, CS%h, CS%uh, CS%vh, eta, Time, &
@@ -2556,6 +2581,19 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
         ! because the restart was not aligned with the interval to recalculate
         ! dtbt, and dtbt was not read from a restart file.
         CS%dtbt_reset_time = CS%dtbt_reset_time - CS%dtbt_reset_interval
+      endif
+    endif
+    !OBC hack
+    if (associated(CS%OBC) .and. CS%update_OBC_period > 0.0) then
+      CS%update_OBC_interval = real_to_time(CS%update_OBC_period)
+      ! Set update_OBC_time to be the next even multiple of update_OBC_interval.
+      CS%update_OBC_time = Time_init + CS%update_OBC_interval * &
+                                 ((Time - Time_init) / CS%update_OBC_interval)
+      if ((CS%update_OBC_time > Time) .and. CS%OBC%update_OBC) then
+        ! Back up dtbt_reset_time one interval to force dtbt to be calculated,
+        ! because the restart was not aligned with the interval to recalculate
+        ! dtbt, and dtbt was not read from a restart file.
+        CS%update_OBC_time = CS%update_OBC_time - CS%update_OBC_interval
       endif
     endif
   elseif (CS%use_RK2) then

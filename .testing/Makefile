@@ -20,7 +20,7 @@ MKMF := $(abspath $(DEPS)/mkmf/bin/mkmf)
 
 # FMS framework
 FMS_URL ?= https://github.com/NOAA-GFDL/FMS.git
-FMS_COMMIT ?= 2019.01.01
+FMS_COMMIT ?= 2019.01.03
 FMS := $(DEPS)/fms
 
 #---
@@ -93,10 +93,33 @@ TARGET_SOURCE = $(call SOURCE,build/target_codebase/src) \
 FMS_SOURCE = $(call SOURCE,$(DEPS)/fms/src)
 
 #---
+# Python preprocessing environment configuration
+
+HAS_NUMPY = $(shell python -c "import numpy" 2> /dev/null && echo "yes")
+HAS_NETCDF4 = $(shell python -c "import netCDF4" 2> /dev/null && echo "yes")
+
+USE_VENV =
+ifneq ($(HAS_NUMPY), yes)
+  USE_VENV = yes
+endif
+ifneq ($(HAS_NETCDF4), yes)
+  USE_VENV = yes
+endif
+
+# When disabled, activation is a null operation (`true`)
+VENV_PATH =
+VENV_ACTIVATE = true
+ifeq ($(USE_VENV), yes)
+  VENV_PATH = work/local-env
+  VENV_ACTIVATE = . $(VENV_PATH)/bin/activate
+endif
+
+
+#---
 # Rules
 
 .PHONY: all build.regressions
-all: $(foreach b,$(BUILDS),build/$(b)/MOM6)
+all: $(foreach b,$(BUILDS),build/$(b)/MOM6) $(VENV_PATH)
 build.regressions: $(foreach b,symmetric target,build/$(b)/MOM6)
 
 # Executable
@@ -184,6 +207,18 @@ $(LIST_PATHS) $(MKMF):
 	cd $(DEPS)/mkmf; git checkout $(MKMF_COMMIT)
 
 
+#---
+# Python preprocessing
+# NOTE: Some less mature environments (e.g. Arm64 Ubuntu) require explicit
+#   installation of numpy before netCDF4, as well as wheel and cython support.
+work/local-env:
+	python3 -m venv $@
+	. $@/bin/activate \
+	  && pip3 install wheel \
+	  && pip3 install cython \
+	  && pip3 install numpy \
+	  && pip3 install netCDF4
+
 #----
 # Testing
 
@@ -264,21 +299,8 @@ $(eval $(call CMP_RULE,regression,symmetric target))
 
 # TODO: chksum_diag parsing of restart files
 
-
 #---
 # Test run output files
-
-# Generalized MPI environment variable support
-# XXX: Using `-env` in the MPICH test can erroneously producing an `nv` file.
-# $(1): Environment variables
-ifeq ($(shell $(MPIRUN) -x tmp=1 true 2> /dev/null ; echo $$?), 0)
-  MPIRUN_CMD=$(MPIRUN) $(if $(1),-x $(1),)
-else ifeq ($(shell $(MPIRUN) -env tmp=1 true 2> /dev/null ; echo $$? ; rm -f nv), 0)
-  MPIRUN_CMD=$(MPIRUN) $(if $(1),-env $(1),)
-else
-  MPIRUN_CMD=$(1) $(MPIRUN)
-endif
-
 
 # Rule to build work/<tc>/{ocean.stats,chksum_diag}.<tag>
 # $(1): Test configuration name <tag>
@@ -293,24 +315,30 @@ work/%/$(1)/ocean.stats work/%/$(1)/chksum_diag: build/$(2)/MOM6
 	if [ $(3) ]; then find build/$(2) -name *.gcda -exec rm -f '{}' \; ; fi
 	mkdir -p $$(@D)
 	cp -rL $$*/* $$(@D)
-	cd $$(@D) && if [ -f Makefile ]; then $(MAKE); fi
+	if [ -f $$(@D)/Makefile ]; then \
+	  $$(VENV_ACTIVATE) \
+	    && cd $$(@D) \
+	    && $(MAKE); \
+	else \
+	  cd $$(@D); \
+	fi
 	mkdir -p $$(@D)/RESTART
 	echo -e "$(4)" > $$(@D)/MOM_override
 	cd $$(@D) \
-	  && $$(call MPIRUN_CMD,$(5)) -n $(6) ../../../$$< 2> std.err > std.out \
+	  && $(5) $(MPIRUN) -n $(6) ../../../$$< 2> std.err > std.out \
 	  || !( \
 	    mkdir -p ../../../results/$$*/ ; \
 	    cat std.out | tee ../../../results/$$*/std.$(1).out | tail -20 ; \
-		cat std.err | tee ../../../results/$$*/std.$(1).err | tail -20 ; \
-		rm ocean.stats chksum_diag ; \
-		echo -e "${FAIL}: $$*.$(1) failed at runtime." \
+	    cat std.err | tee ../../../results/$$*/std.$(1).err | tail -20 ; \
+	    rm ocean.stats chksum_diag ; \
+	    echo -e "${FAIL}: $$*.$(1) failed at runtime." \
 	  )
 	@echo -e "${DONE}: $$*.$(1); no runtime errors."
 	if [ $(3) ]; then \
 	  mkdir -p results/$$* ; \
 	  bash <(curl -s https://codecov.io/bash) -n $$@ \
 	    > work/$$*/codecov.$(1).out \
-		2> work/$$*/codecov.$(1).err ; \
+	    2> work/$$*/codecov.$(1).err ; \
 	fi
 endef
 
@@ -322,7 +350,7 @@ $(eval $(call STAT_RULE,symmetric,symmetric,$(REPORT_COVERAGE),,,1))
 $(eval $(call STAT_RULE,asymmetric,asymmetric,,,,1))
 $(eval $(call STAT_RULE,target,target,,,,1))
 $(eval $(call STAT_RULE,repro,repro,,,,1))
-$(eval $(call STAT_RULE,openmp,openmp,,,,1))
+$(eval $(call STAT_RULE,openmp,openmp,,,GOMP_CPU_AFFINITY=0,1))
 $(eval $(call STAT_RULE,layout,symmetric,,LAYOUT=2$(,)1,,2))
 $(eval $(call STAT_RULE,rotate,symmetric,,ROTATE_INDEX=True\nINDEX_TURNS=1,,1))
 $(eval $(call STAT_RULE,nan,symmetric,,,MALLOC_PERTURB_=256,1))
@@ -339,7 +367,13 @@ work/%/restart/ocean.stats: build/symmetric/MOM6
 	rm -rf $(@D)
 	mkdir -p $(@D)
 	cp -rL $*/* $(@D)
-	cd work/$*/restart && if [ -f Makefile ]; then $(MAKE); fi
+	if [ -f $(@D)/Makefile ]; then \
+	  $(VENV_ACTIVATE) \
+	    && cd work/$*/restart \
+	    && $(MAKE); \
+	else \
+	  cd work/$*/restart; \
+	fi
 	mkdir -p $(@D)/RESTART
 	# Generate the half-period input namelist
 	# TODO: Assumes that runtime set by DAYMAX, will fail if set by input.nml
@@ -354,8 +388,8 @@ work/%/restart/ocean.stats: build/symmetric/MOM6
 	cd $(@D) && $(MPIRUN) -n 1 ../../../$< 2> std1.err > std1.out \
 	  || !( \
 	    cat std1.out | tee ../../../results/$*/std.restart1.out | tail ; \
-		cat std1.err | tee ../../../results/$*/std.restart1.err | tail ; \
-		echo -e "${FAIL}: $*.restart failed at runtime." \
+	    cat std1.err | tee ../../../results/$*/std.restart1.err | tail ; \
+	    echo -e "${FAIL}: $*.restart failed at runtime." \
 	  )
 	# Setup the next inputs
 	cd $(@D) && rm -rf INPUT && mv RESTART INPUT
@@ -365,8 +399,8 @@ work/%/restart/ocean.stats: build/symmetric/MOM6
 	cd $(@D) && $(MPIRUN) -n 1 ../../../$< 2> std2.err > std2.out \
 	  || !( \
 	    cat std2.out | tee ../../../results/$*/std.restart2.out | tail ; \
-		cat std2.err | tee ../../../results/$*/std.restart2.err | tail ; \
-		echo -e "${FAIL}: $*.restart failed at runtime." \
+	    cat std2.err | tee ../../../results/$*/std.restart2.err | tail ; \
+	    echo -e "${FAIL}: $*.restart failed at runtime." \
 	  )
 
 # TODO: Restart checksum diagnostics
