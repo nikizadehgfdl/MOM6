@@ -24,7 +24,7 @@ use MOM_open_boundary, only : OBC_NONE, OBC_SIMPLE
 use MOM_open_boundary, only : open_boundary_query
 use MOM_open_boundary, only : set_tracer_data, initialize_segment_data
 use MOM_open_boundary, only : open_boundary_test_extern_h
-use MOM_open_boundary, only : fill_temp_salt_segments
+use MOM_open_boundary, only : fill_temp_salt_segments,setup_OBC_tracer_reservoirs
 use MOM_open_boundary, only : update_OBC_segment_data
 !use MOM_open_boundary, only : set_3D_OBC_data
 use MOM_grid_initialize, only : initialize_masks, set_grid_metrics
@@ -380,9 +380,10 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, US, PF, dirs, &
       end select
     endif
   endif  ! not from_Z_file.
-  if (use_temperature .and. use_OBC) &
+  if (use_temperature .and. use_OBC) then 
     call fill_temp_salt_segments(G, OBC, tv)
-
+    call setup_OBC_tracer_reservoirs(G%ke, OBC)
+  endif
   ! The thicknesses in halo points might be needed to initialize the velocities.
   if (new_sim) call pass_var(h, G%Domain)
 

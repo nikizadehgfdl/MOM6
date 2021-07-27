@@ -66,6 +66,7 @@ public update_OBC_ramp
 public rotate_OBC_config
 public rotate_OBC_init
 public initialize_segment_data
+public setup_OBC_tracer_reservoirs
 
 integer, parameter, public :: OBC_NONE = 0      !< Indicates the use of no open boundary
 integer, parameter, public :: OBC_SIMPLE = 1    !< Indicates the use of a simple inflow open boundary
@@ -82,7 +83,7 @@ integer, parameter         :: MAX_OBC_FIELDS = 100  !< Maximum number of data fi
 type, public :: OBC_segment_data_type
   integer :: fid                                !< handle from FMS associated with segment data on disk
   integer :: fid_dz                             !< handle from FMS associated with segment thicknesses on disk
-  character(len=8)                :: name       !< a name identifier for the segment data
+  character(len=32)                :: name       !< a name identifier for the segment data
   character(len=8)                :: genre      !< a family identifier for the segment data
   real, dimension(:,:,:), allocatable :: buffer_src   !< buffer for segment data located at cell faces
                                                 !! and on the original vertical grid
@@ -329,7 +330,6 @@ end type external_tracers_segments_props
 type(external_tracers_segments_props), pointer, save :: obgc_segments_props => NULL() !< Linked-list of obgc tracers properties
 integer, save :: num_obgc_tracers = 0  !< Keeps the total number of obgc tracers
 integer :: id_clock_pass !< A CPU time clock
-
 character(len=40)  :: mdl = "MOM_open_boundary" !< This module's name.
 ! This include declares and sets the variable "version".
 #include "version_variable.h"
@@ -1911,8 +1911,8 @@ subroutine open_boundary_impose_land_mask(OBC, G, areaCu, areaCv, US)
 end subroutine open_boundary_impose_land_mask
 
 !> Make sure the OBC tracer reservoirs are initialized.
-subroutine setup_OBC_tracer_reservoirs(G, OBC)
-  type(ocean_grid_type),      intent(in)    :: G          !< Ocean grid structure
+subroutine setup_OBC_tracer_reservoirs(Gke, OBC)
+  integer,                    intent(in)    :: Gke !< Ocean grid ke
   type(ocean_OBC_type),       pointer       :: OBC !< Open boundary control structure
   ! Local variables
   type(OBC_segment_type), pointer :: segment => NULL()
@@ -1925,7 +1925,7 @@ subroutine setup_OBC_tracer_reservoirs(G, OBC)
         I = segment%HI%IsdB
         do m=1,OBC%ntr
           if (associated(segment%tr_Reg%Tr(m)%tres)) then
-            do k=1,G%ke
+            do k=1,Gke
               do j=segment%HI%jsd,segment%HI%jed
                 OBC%tres_x(I,j,k,m) = segment%tr_Reg%Tr(m)%t(i,j,k)
               enddo
@@ -1936,7 +1936,7 @@ subroutine setup_OBC_tracer_reservoirs(G, OBC)
         J = segment%HI%JsdB
         do m=1,OBC%ntr
           if (associated(segment%tr_Reg%Tr(m)%tres)) then
-            do k=1,G%ke
+            do k=1,Gke
               do i=segment%HI%isd,segment%HI%ied
                 OBC%tres_y(i,J,k,m) = segment%tr_Reg%Tr(m)%t(i,J,k)
               enddo
@@ -3618,6 +3618,7 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
 
   if (.not. associated(OBC)) return
 
+  call MOM_error(NOTE,"update_OBC_segment_data: called! ")
   do n = 1, OBC%number_of_segments
     segment => OBC%segment(n)
 
@@ -4537,7 +4538,7 @@ subroutine fill_obgc_segments(G, OBC, tr_ptr, tr_name)
     endif
     segment%tr_Reg%Tr(nt)%tres(:,:,:) = segment%tr_Reg%Tr(nt)%t(:,:,:)
   enddo
-  call setup_OBC_tracer_reservoirs(G, OBC) !This will redo the T&S
+  !call setup_OBC_tracer_reservoirs(G%ke, OBC) !This will redo the T&S
 end subroutine fill_obgc_segments
 
 subroutine fill_temp_salt_segments(G, OBC, tv)
@@ -4596,7 +4597,7 @@ subroutine fill_temp_salt_segments(G, OBC, tv)
     segment%tr_Reg%Tr(2)%tres(:,:,:) = segment%tr_Reg%Tr(2)%t(:,:,:)
   enddo
 
-  call setup_OBC_tracer_reservoirs(G, OBC)
+  !call setup_OBC_tracer_reservoirs(G%ke, OBC)
 end subroutine fill_temp_salt_segments
 
 !> Find the region outside of all open boundary segments and
@@ -4856,7 +4857,7 @@ subroutine open_boundary_register_restarts(HI, GV, OBC, Reg, param_file, restart
   ! Local variables
   type(vardesc) :: vd(2)
   integer       :: m, n
-  character(len=100) :: mesg
+  character(len=256) :: mesg,longname
   type(OBC_segment_type), pointer :: segment=>NULL()
 
   if (.not. associated(OBC)) &
@@ -4924,37 +4925,41 @@ subroutine open_boundary_register_restarts(HI, GV, OBC, Reg, param_file, restart
 
   ! Still painfully inefficient, now in four dimensions.
   ! Allocating both for now so that the pass_vector works.
-  if (any(OBC%tracer_x_reservoirs_used) .or. any(OBC%tracer_y_reservoirs_used)) then
+  if (any(OBC%tracer_x_reservoirs_used)) then
     allocate(OBC%tres_x(HI%isdB:HI%iedB,HI%jsd:HI%jed,GV%ke,OBC%ntr))
     OBC%tres_x(:,:,:,:) = 0.0
     do m=1,OBC%ntr
       if (OBC%tracer_x_reservoirs_used(m)) then
-        if (modulo(HI%turns, 2) /= 0) then
-          write(mesg,'("tres_y_",I3.3)') m
-          vd(1) = var_desc(mesg,"Conc", "Tracer concentration for NS OBCs",'v','L')
-          call register_restart_field(OBC%tres_x(:,:,:,m), vd(1), .false., restart_CSp)
-        else
+!        if (modulo(HI%turns, 2) /= 0) then
+!          write(mesg,'("tres_y_",I3.3)') m
+!          longname="Tracer concentration for NS OBCs for "//trim(Reg%Tr(m)%name)
+!          vd(1) = var_desc(mesg,"Conc", longname,'v','L')
+!          call register_restart_field(OBC%tres_x(:,:,:,m), vd(1), .false., restart_CSp)
+!        else
           write(mesg,'("tres_x_",I3.3)') m
-          vd(1) = var_desc(mesg,"Conc", "Tracer concentration for EW OBCs",'u','L')
+          longname="Tracer concentration for EW OBCs for "//trim(Reg%Tr(m)%name)
+          vd(1) = var_desc(mesg,"Conc", longname,'u','L')
           call register_restart_field(OBC%tres_x(:,:,:,m), vd(1), .false., restart_CSp)
-        endif
+!        endif
       endif
     enddo
-! endif
-! if (any(OBC%tracer_y_reservoirs_used)) then
+  endif
+  if (any(OBC%tracer_y_reservoirs_used)) then
     allocate(OBC%tres_y(HI%isd:HI%ied,HI%jsdB:HI%jedB,GV%ke,OBC%ntr))
     OBC%tres_y(:,:,:,:) = 0.0
     do m=1,OBC%ntr
       if (OBC%tracer_y_reservoirs_used(m)) then
-        if (modulo(HI%turns, 2) /= 0) then
-          write(mesg,'("tres_x_",I3.3)') m
-          vd(1) = var_desc(mesg,"Conc", "Tracer concentration for EW OBCs",'u','L')
-          call register_restart_field(OBC%tres_y(:,:,:,m), vd(1), .false., restart_CSp)
-        else
+!        if (modulo(HI%turns, 2) /= 0) then
+!          write(mesg,'("tres_x_",I3.3)') m
+!          longname="Tracer concentration for EW OBCs for "//trim(Reg%Tr(m)%name)
+!          vd(1) = var_desc(mesg,"Conc", longname,'u','L')
+!          call register_restart_field(OBC%tres_y(:,:,:,m), vd(1), .false., restart_CSp)
+!        else
           write(mesg,'("tres_y_",I3.3)') m
-          vd(1) = var_desc(mesg,"Conc", "Tracer concentration for NS OBCs",'v','L')
+          longname="Tracer concentration for NS OBCs for "//trim(Reg%Tr(m)%name)
+          vd(1) = var_desc(mesg,"Conc", longname,'v','L')
           call register_restart_field(OBC%tres_y(:,:,:,m), vd(1), .false., restart_CSp)
-        endif
+!        endif
       endif
     enddo
   endif
@@ -5005,7 +5010,9 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
           u_L_in  = min(0.0, (idir*uhr(I,j,k))*segment%Tr_InvLscale_in  / &
                     ((h(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
           fac1 = 1.0 + (u_L_out-u_L_in)
-          segment%tr_Reg%Tr(m)%tres(I,j,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(I,j,k) + &
+          segment%tr_Reg%Tr(m)%tres(I,j,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(I,j,k) + & !NOT reproduce across restart
+          !segment%tr_Reg%Tr(m)%tres(I,j,k) = (1.0/fac1)*(OBC%tres_x(I,j,k,m) + & !NOT reproduce
+          !segment%tr_Reg%Tr(m)%tres(I,j,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%t(I,j,k) + & !Reproduce
                             (u_L_out*Reg%Tr(m)%t(I+ishift,j,k) - &
                              u_L_in*segment%tr_Reg%Tr(m)%t(I,j,k)))
           if (associated(OBC%tres_x)) OBC%tres_x(I,j,k,m) = segment%tr_Reg%Tr(m)%tres(I,j,k)
@@ -5030,7 +5037,9 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
           v_L_in  = min(0.0, (jdir*vhr(i,J,k))*segment%Tr_InvLscale_in  / &
                     ((h(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
           fac1 = 1.0 + (v_L_out-v_L_in)
-          segment%tr_Reg%Tr(m)%tres(i,J,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(i,J,k) + &
+          segment%tr_Reg%Tr(m)%tres(i,J,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(i,J,k) + & !NOT reproduce across restart
+          !segment%tr_Reg%Tr(m)%tres(i,J,k) = (1.0/fac1)*(OBC%tres_y(i,J,k,m) + &           !NOT reproduce  
+          !segment%tr_Reg%Tr(m)%tres(i,J,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%t(i,J,k) + & !Reproduce
                             (v_L_out*Reg%Tr(m)%t(i,J+jshift,k) - &
                              v_L_in*segment%tr_Reg%Tr(m)%t(i,J,k)))
           if (associated(OBC%tres_y)) OBC%tres_y(i,J,k,m) = segment%tr_Reg%Tr(m)%tres(i,J,k)
