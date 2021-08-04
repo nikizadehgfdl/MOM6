@@ -262,6 +262,10 @@ type, public :: MOM_control_struct ; private
                                      !! calculated, and if it is 0, dtbt is calculated every step.
   type(time_type) :: dtbt_reset_interval !< A time_time representation of dtbt_reset_period.
   type(time_type) :: dtbt_reset_time !< The next time DTBT should be calculated.
+  real            :: update_OBC_period!< The maximum allowed time interval between OBC updates
+  type(time_type) :: update_OBC_interval !< A time_time representation of update_OBC_period.
+  type(time_type) :: update_OBC_time !< The next time OBC is applied.
+
   real, dimension(:,:), pointer :: frac_shelf_h => NULL() !< fraction of total area occupied
                                      !! by ice shelf [nondim]
   real, dimension(:,:,:), pointer :: &
@@ -1052,6 +1056,17 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
       if (Time_local >= CS%dtbt_reset_time) then  !### Change >= to > here.
         calc_dtbt = .true.
         CS%dtbt_reset_time = CS%dtbt_reset_time + CS%dtbt_reset_interval
+      endif
+    endif
+    !OBC segment data update for some fields can be less frequent than others 
+    if(associated(CS%OBC)) then
+      CS%OBC%update_OBC_seg_data = .false.
+      if (CS%update_OBC_period == 0.0) CS%OBC%update_OBC_seg_data = .true.
+      if (CS%update_OBC_period > 0.0) then
+       if (Time_local >= CS%update_OBC_time) then  !### Change >= to > here.
+        CS%OBC%update_OBC_seg_data = .true.
+        CS%update_OBC_time = CS%update_OBC_time + CS%update_OBC_interval
+       endif
       endif
     endif
 
@@ -1924,6 +1939,16 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  "DTBT will be set every dynamics time step. The default "//&
                  "is set by DT_THERM.  This is only used if SPLIT is true.", &
                  units="s", default=default_val, do_not_read=(dtbt > 0.0))
+
+    CS%update_OBC_period = -1.0
+    call get_param(param_file, "MOM", "UPDATE_OBC_PERIOD_MAX", CS%update_OBC_period, &
+                 "The maximum period between OBC segment data updates. "//&
+                 "If UPDATE_OBC_PERIOD_MAX  is negative, DTBT is set based "//&
+                 "only on information available at initialization.  If 0, "//&
+                 "OBC updates every dynamics time step. The default "//&
+                 "is set by DT_THERM.  This is only used if SPLIT is true.", &
+                 units="s", default=default_val, do_not_read=(dtbt > 0.0))
+     
   endif
 
   ! This is here in case these values are used inappropriately.
@@ -2620,6 +2645,19 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
         ! because the restart was not aligned with the interval to recalculate
         ! dtbt, and dtbt was not read from a restart file.
         CS%dtbt_reset_time = CS%dtbt_reset_time - CS%dtbt_reset_interval
+      endif
+    endif
+    !Set OBC segment data update period
+    if (associated(CS%OBC) .and. CS%update_OBC_period > 0.0) then
+      CS%update_OBC_interval = real_to_time(CS%update_OBC_period)
+      ! Set update_OBC_time to be the next even multiple of update_OBC_interval.
+      CS%update_OBC_time = Time_init + CS%update_OBC_interval * &
+                                 ((Time - Time_init) / CS%update_OBC_interval)
+      if ((CS%update_OBC_time > Time) .and. CS%OBC%update_OBC) then
+        ! Back up dtbt_reset_time one interval to force dtbt to be calculated,
+        ! because the restart was not aligned with the interval to recalculate
+        ! dtbt, and dtbt was not read from a restart file.
+        CS%update_OBC_time = CS%update_OBC_time - CS%update_OBC_interval
       endif
     endif
   elseif (CS%use_RK2) then
