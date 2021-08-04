@@ -2303,11 +2303,6 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
            CS%dyn_unsplit_CSp, restart_CSp)
   endif
 
-  ! This subroutine calls user-specified tracer registration routines.
-  ! Additional calls can be added to MOM_tracer_flow_control.F90.
-  call call_tracer_register(dG%HI, GV, US, param_file, CS%tracer_flow_CSp, &
-                            CS%tracer_Reg, restart_CSp, CS%OBC)
-
   call MEKE_alloc_register_restart(dG%HI, param_file, CS%MEKE, restart_CSp)
   call set_visc_register_restarts(dG%HI, GV, param_file, CS%visc, restart_CSp)
   call mixedlayer_restrat_register_restarts(dG%HI, param_file, &
@@ -2336,7 +2331,16 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
     ! could occur with the call to update_OBC_data or after the main initialization.
     if (use_temperature) &
       call register_temp_salt_segments(GV, CS%OBC, CS%tracer_Reg, param_file)
+  endif
 
+  ! This subroutine calls user-specified tracer registration routines.
+  ! Additional calls can be added to MOM_tracer_flow_control.F90.
+  ! Needs to be after registering temperature and salinity OBCs above,
+  ! or else the user-specified tracers will be first.
+  call call_tracer_register(dG%HI, GV, US, param_file, CS%tracer_flow_CSp, &
+                            CS%tracer_Reg, restart_CSp, CS%OBC)
+
+  if (associated(CS%OBC)) then
     ! This needs the number of tracers and to have called any code that sets whether
     ! reservoirs are used.
     call open_boundary_register_restarts(dg%HI, GV, CS%OBC, CS%tracer_Reg, &
