@@ -4714,9 +4714,6 @@ subroutine register_temp_salt_segments(GV, OBC, tr_Reg, param_file)
     segment=>OBC%segment(n)
     if (.not. segment%on_pe) cycle
 
-    if (associated(segment%tr_Reg)) &
-         call MOM_error(FATAL,"register_temp_salt_segments: tracer array was previously allocated")
-
     name = 'temp'
     call tracer_name_lookup(tr_Reg, tr_ptr, name)
     call register_segment_tracer(tr_ptr, param_file, GV, segment, &
