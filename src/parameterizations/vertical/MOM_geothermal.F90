@@ -601,7 +601,7 @@ end subroutine geothermal_init
 subroutine geothermal_end(CS)
   type(geothermal_CS), intent(inout) :: CS !< Geothermal heating control structure that
                                            !! will be deallocated in this subroutine.
-  deallocate(CS%geo_heat)
+  if (associated(CS%geo_heat)) deallocate(CS%geo_heat)
 end subroutine geothermal_end
 
 !> \namespace mom_geothermal
