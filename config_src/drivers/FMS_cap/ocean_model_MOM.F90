@@ -424,7 +424,7 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, time_start_upda
                               Ocean_coupling_time_step, update_dyn, update_thermo, &
                               Ocn_fluxes_used, start_cycle, end_cycle, cycle_length)
   type(ice_ocean_boundary_type), &
-                     intent(in)    :: Ice_ocean_boundary !< A structure containing the various
+                     intent(inout)    :: Ice_ocean_boundary !< A structure containing the various
                                               !! forcing fields coming from the ice and atmosphere.
   type(ocean_state_type), &
                      pointer       :: OS      !< A pointer to a private structure containing the
@@ -452,8 +452,6 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, time_start_upda
   real,    optional, intent(in)    :: cycle_length !< The duration of a coupled time stepping cycle [s].
 
   ! Local variables
-  type(ice_ocean_boundary_type) :: Ice_ocean_boundary_homogenized ! A copy of the structure containing the
-                            ! forcing fields coming from the ice and atmosphere, that is horizontally averaged.
   type(time_type) :: Time_seg_start ! Stores the dynamic or thermodynamic ocean model time at the
                             ! start of this call to allow step_MOM to temporarily change the time
                             ! as seen by internal modules.
@@ -513,16 +511,11 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, time_start_upda
   call get_domain_extent(Ocean_sfc%Domain, index_bnds(1), index_bnds(2), index_bnds(3), index_bnds(4))
 
   if (OS%use_homogenized_IOB) &
-    call homogenize_IOB(Ice_ocean_boundary, Ice_ocean_boundary_homogenized, OS%grid, index_bnds)
+    call homogenize_IOB(Ice_ocean_boundary, OS%grid, index_bnds)
 
   if (do_dyn) then
-    if (OS%use_homogenized_IOB) then
-      call convert_IOB_to_forces(Ice_ocean_boundary_homogenized, OS%forces, index_bnds, OS%Time_dyn, OS%grid, OS%US, &
-                                 OS%forcing_CSp, dt_forcing=dt_coupling, reset_avg=OS%fluxes%fluxes_used)
-    else
-      call convert_IOB_to_forces(Ice_ocean_boundary, OS%forces, index_bnds, OS%Time_dyn, OS%grid, OS%US, &
-                                 OS%forcing_CSp, dt_forcing=dt_coupling, reset_avg=OS%fluxes%fluxes_used)
-    endif
+    call convert_IOB_to_forces(Ice_ocean_boundary, OS%forces, index_bnds, OS%Time_dyn, OS%grid, OS%US, &
+                               OS%forcing_CSp, dt_forcing=dt_coupling, reset_avg=OS%fluxes%fluxes_used)
     if (OS%use_ice_shelf) &
       call add_shelf_forces(OS%grid, OS%US, OS%Ice_shelf_CSp, OS%forces)
     if (OS%icebergs_alter_ocean) &
@@ -532,13 +525,8 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, time_start_upda
 
   if (do_thermo) then
     if (OS%fluxes%fluxes_used) then
-      if (OS%use_homogenized_IOB) then
-        call convert_IOB_to_fluxes(Ice_ocean_boundary_homogenized, OS%fluxes, index_bnds, OS%Time, dt_coupling, &
-                                   OS%grid, OS%US, OS%forcing_CSp, OS%sfc_state)
-      else
-        call convert_IOB_to_fluxes(Ice_ocean_boundary, OS%fluxes, index_bnds, OS%Time, dt_coupling, &
-                                   OS%grid, OS%US, OS%forcing_CSp, OS%sfc_state)
-      endif
+      call convert_IOB_to_fluxes(Ice_ocean_boundary, OS%fluxes, index_bnds, OS%Time, dt_coupling, &
+                                 OS%grid, OS%US, OS%forcing_CSp, OS%sfc_state)
       ! Add ice shelf fluxes
       if (OS%use_ice_shelf) &
         call shelf_calc_flux(OS%sfc_state, OS%fluxes, OS%Time, dt_coupling, OS%Ice_shelf_CSp)
@@ -554,15 +542,9 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, time_start_upda
     else
       ! The previous fluxes have not been used yet, so translate the input fluxes
       ! into a temporary type and then accumulate them in about 20 lines.
-      if (OS%use_homogenized_IOB) then
-        OS%flux_tmp%C_p = OS%fluxes%C_p
-        call convert_IOB_to_fluxes(Ice_ocean_boundary_homogenized, OS%flux_tmp, index_bnds, OS%Time, dt_coupling, &
+      OS%flux_tmp%C_p = OS%fluxes%C_p
+      call convert_IOB_to_fluxes(Ice_ocean_boundary, OS%flux_tmp, index_bnds, OS%Time, dt_coupling, &
                                    OS%grid, OS%US, OS%forcing_CSp, OS%sfc_state)
-      else
-        OS%flux_tmp%C_p = OS%fluxes%C_p
-        call convert_IOB_to_fluxes(Ice_ocean_boundary, OS%flux_tmp, index_bnds, OS%Time, dt_coupling, &
-                                   OS%grid, OS%US, OS%forcing_CSp, OS%sfc_state)
-      endif
 
       if (OS%use_ice_shelf) &
         call shelf_calc_flux(OS%sfc_state, OS%flux_tmp, OS%Time, dt_coupling, OS%Ice_shelf_CSp)
@@ -1221,12 +1203,10 @@ subroutine ocean_model_get_UV_surf(OS, Ocean, name, array2D, isc, jsc)
 end subroutine ocean_model_get_UV_surf
 
 !> Homogenizes all associated IOB fields.
-subroutine homogenize_IOB(IOB,IOB_h, G, index_bounds)
+subroutine homogenize_IOB(IOB, G, index_bounds)
   type(ice_ocean_boundary_type), &
-       target, intent(in)             :: IOB          !< An ice-ocean boundary type with fluxes to drive
+       target, intent(inout)          :: IOB          !< An ice-ocean boundary type with fluxes to drive
                                                       !! the ocean in a coupled model
-  type(ice_ocean_boundary_type), &
-       target, intent(out)            :: IOB_h        !< Similar to IOB, but with homogenized fields.
   type(ocean_grid_type),   intent(in) :: G            !< The ocean's grid structure
   integer, dimension(4),   intent(in) :: index_bounds !< The i- and j- size of the arrays in IOB.
 
@@ -1240,127 +1220,102 @@ subroutine homogenize_IOB(IOB,IOB_h, G, index_bounds)
   i0 = is - isc_bnd ; j0 = js - jsc_bnd
 
   if (associated(IOB%u_flux)) then
-    allocate(IOB_h%u_flux (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%u_flux = 0.0
-    call homogenize_field(IOB%u_flux,IOB_h%u_flux, G, index_bounds)
+    call homogenize_field(IOB%u_flux, G, index_bounds)
   endif
 
   if (associated(IOB%v_flux)) then
-    allocate(IOB_h%v_flux (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%v_flux = 0.0
-    call homogenize_field(IOB%v_flux,IOB_h%v_flux, G, index_bounds)
+    call homogenize_field(IOB%v_flux, G, index_bounds)
   endif
 
   if (associated(IOB%t_flux)) then
-    allocate(IOB_h%t_flux (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%t_flux = 0.0
-    call homogenize_field(IOB%t_flux,IOB_h%t_flux, G, index_bounds)
+    call homogenize_field(IOB%t_flux, G, index_bounds)
   endif
 
   if (associated(IOB%q_flux)) then
-    allocate(IOB_h%q_flux (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%q_flux = 0.0
-    call homogenize_field(IOB%q_flux,IOB_h%q_flux, G, index_bounds)
+    call homogenize_field(IOB%q_flux, G, index_bounds)
   endif
 
   if (associated(IOB%salt_flux)) then
-    allocate(IOB_h%salt_flux (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%salt_flux = 0.0
-    call homogenize_field(IOB%salt_flux,IOB_h%salt_flux, G, index_bounds)
+    call homogenize_field(IOB%salt_flux, G, index_bounds)
   endif
 
-
   if (associated(IOB%lw_flux)) then
-    allocate(IOB_h%lw_flux (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%lw_flux = 0.0
-    call homogenize_field(IOB%lw_flux,IOB_h%lw_flux, G, index_bounds)
+    call homogenize_field(IOB%lw_flux, G, index_bounds)
   endif
 
   if (associated(IOB%sw_flux_vis_dir)) then
-    allocate(IOB_h%sw_flux_vis_dir (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%sw_flux_vis_dir = 0.0
-    call homogenize_field(IOB%sw_flux_vis_dir,IOB_h%sw_flux_vis_dir, G, index_bounds)
+    call homogenize_field(IOB%sw_flux_vis_dir, G, index_bounds)
   endif
 
   if (associated(IOB%sw_flux_vis_dif)) then
-    allocate(IOB_h%sw_flux_vis_dif (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%sw_flux_vis_dif = 0.0
-    call homogenize_field(IOB%sw_flux_vis_dif,IOB_h%sw_flux_vis_dif, G, index_bounds)
+    call homogenize_field(IOB%sw_flux_vis_dif, G, index_bounds)
   endif
 
   if (associated(IOB%sw_flux_nir_dir)) then
-    allocate(IOB_h%sw_flux_nir_dir (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%sw_flux_nir_dir = 0.0
-    call homogenize_field(IOB%sw_flux_nir_dir,IOB_h%sw_flux_nir_dir, G, index_bounds)
+    call homogenize_field(IOB%sw_flux_nir_dir, G, index_bounds)
   endif
 
   if (associated(IOB%sw_flux_nir_dif)) then
-    allocate(IOB_h%sw_flux_nir_dif (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%sw_flux_nir_dif = 0.0
-    call homogenize_field(IOB%sw_flux_nir_dif,IOB_h%sw_flux_nir_dif, G, index_bounds)
+    call homogenize_field(IOB%sw_flux_nir_dif, G, index_bounds)
   endif
 
   if (associated(IOB%lprec)) then
-    allocate(IOB_h%lprec (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%lprec = 0.0
-    call homogenize_field(IOB%lprec,IOB_h%lprec, G, index_bounds)
+    call homogenize_field(IOB%lprec, G, index_bounds)
   endif
 
   if (associated(IOB%fprec)) then
-    allocate(IOB_h%fprec (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%fprec = 0.0
-    call homogenize_field(IOB%fprec,IOB_h%fprec, G, index_bounds)
+    call homogenize_field(IOB%fprec, G, index_bounds)
   endif
 
   if (associated(IOB%runoff)) then
-    allocate(IOB_h%runoff (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%runoff = 0.0
-    call homogenize_field(IOB%runoff,IOB_h%runoff, G, index_bounds)
+    call homogenize_field(IOB%runoff, G, index_bounds)
   endif
 
   if (associated(IOB%calving)) then
-    allocate(IOB_h%calving (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%calving = 0.0
-    call homogenize_field(IOB%calving,IOB_h%calving, G, index_bounds)
+    call homogenize_field(IOB%calving, G, index_bounds)
   endif
 
   if (associated(IOB%stress_mag)) then
-    allocate(IOB_h%stress_mag (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%stress_mag = 0.0
-    call homogenize_field(IOB%stress_mag,IOB_h%stress_mag, G, index_bounds)
+    call homogenize_field(IOB%stress_mag, G, index_bounds)
   endif
 
   if (associated(IOB%ustar_berg)) then
-    allocate(IOB_h%ustar_berg (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%ustar_berg = 0.0
-    call homogenize_field(IOB%ustar_berg,IOB_h%ustar_berg, G, index_bounds)
+    call homogenize_field(IOB%ustar_berg, G, index_bounds)
   endif
 
   if (associated(IOB%area_berg)) then
-    allocate(IOB_h%area_berg (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%area_berg = 0.0
-    call homogenize_field(IOB%area_berg,IOB_h%area_berg, G, index_bounds)
+    call homogenize_field(IOB%area_berg, G, index_bounds)
   endif
 
   if (associated(IOB%mass_berg)) then
-    allocate(IOB_h%mass_berg (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%mass_berg = 0.0
-    call homogenize_field(IOB%mass_berg,IOB_h%mass_berg, G, index_bounds)
+    call homogenize_field(IOB%mass_berg, G, index_bounds)
   endif
 
   if (associated(IOB%runoff_hflx)) then
-    allocate(IOB_h%runoff_hflx (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%runoff_hflx = 0.0
-    call homogenize_field(IOB%runoff_hflx,IOB_h%runoff_hflx, G, index_bounds)
+    call homogenize_field(IOB%runoff_hflx, G, index_bounds)
   endif
 
   if (associated(IOB%calving_hflx)) then
-    allocate(IOB_h%calving_hflx (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%calving_hflx = 0.0
-    call homogenize_field(IOB%calving_hflx,IOB_h%calving_hflx, G, index_bounds)
+    call homogenize_field(IOB%calving_hflx, G, index_bounds)
   endif
 
   if (associated(IOB%p)) then
-    allocate(IOB_h%p (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%p = 0.0
-    call homogenize_field(IOB%p,IOB_h%p, G, index_bounds)
+    call homogenize_field(IOB%p, G, index_bounds)
   endif
 
   if (associated(IOB%mi)) then
-    allocate(IOB_h%mi (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%mi = 0.0
-    call homogenize_field(IOB%mi,IOB_h%mi, G, index_bounds)
+    call homogenize_field(IOB%mi, G, index_bounds)
   endif
 
   if (associated(IOB%ice_rigidity)) then
-    allocate(IOB_h%ice_rigidity (isc_bnd:iec_bnd,jsc_bnd:jec_bnd) ) ; IOB_h%ice_rigidity = 0.0
-    call homogenize_field(IOB%ice_rigidity,IOB_h%ice_rigidity, G, index_bounds)
+    call homogenize_field(IOB%ice_rigidity, G, index_bounds)
   endif
 
 end subroutine homogenize_IOB
 
 !> Homogenize fields for homogenize_IOB
-subroutine homogenize_field(field_in,field_out,G, index_bounds)
-  real, dimension(:,:), intent(in)    :: field_in     !< Input 2d array meant to be homogenized
-  real, dimension(:,:), intent(out)   :: field_out    !< Output 2d array that is homogenized
+subroutine homogenize_field(field,G, index_bounds)
+  real, dimension(:,:), intent(inout) :: field     !< 2d array meant to be homogenized
   type(ocean_grid_type),   intent(in) :: G            !< The ocean's grid structure
   integer, dimension(4),   intent(in) :: index_bounds !< The i- and j- size of the arrays in IOB.
 
@@ -1376,7 +1331,7 @@ subroutine homogenize_field(field_in,field_out,G, index_bounds)
 
   tmp_sum = 0.0 ; N = 0.0
   do j=js,je ; do i=is,ie
-    tmp_sum = tmp_sum + field_in(i-i0,j-j0) * G%mask2dT(i,j)
+    tmp_sum = tmp_sum + field(i-i0,j-j0) * G%mask2dT(i,j)
     N = N + G%mask2dT(i,j)
   enddo; enddo
 
@@ -1385,7 +1340,7 @@ subroutine homogenize_field(field_in,field_out,G, index_bounds)
 
   tmp_mean = tmp_sum/N
   do j=js,je ; do i=is,ie
-    field_out(i-i0,j-j0) = tmp_mean
+    field(i-i0,j-j0) = tmp_mean
   enddo; enddo
 
 end subroutine homogenize_field
