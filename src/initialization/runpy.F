@@ -1,3 +1,5 @@
+!Initially copied from https://github.com/wangsl/python-embedding
+!
       Subroutine RunPy(PyScript, PyFunction, X, Nx, Y, Ny)
       Implicit None
       Character*(*) PyScript, PyFunction

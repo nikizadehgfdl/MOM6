@@ -1,5 +1,5 @@
 #!/bin/env python
-
+#Initially copied from https://github.com/wangsl/python-embedding
 import sys
 from math import sin
 #import torch

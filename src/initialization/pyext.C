@@ -1,3 +1,4 @@
+//Initially copied from https://github.com/wangsl/python-embedding
 #include <stdio.h>
 #include <iostream>
 #include <cassert>
