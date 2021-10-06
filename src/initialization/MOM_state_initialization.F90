@@ -184,6 +184,10 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, US, PF, dirs, &
 # include "version_variable.h"
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
+      Integer Nx, Ny
+      Parameter(Nx = 15)
+      Parameter(Ny = 15)
+      Real*8 X(Nx), Y(Ny)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
@@ -643,7 +647,15 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, US, PF, dirs, &
                                     PF, oda_incupd_CSp, restart_CS, Time)
   endif
 
+  if (is_root_pe()) call MOM_mesg("MOM_initialize_state: Testing Python embedding ...")
+  Do I = 1, Nx
+         X(I) = DBLE(I)
+         Y(I) = 0.0D0
+  EndDo
 
+  Call RunPy('test.py', 'my_test', X, Nx, Y, Ny) !This worked
+  !Call RunPy_3darray('test.py', 'my_test', h, is,ie,js,je,1,nz)
+  if (is_root_pe()) call MOM_mesg("MOM_initialize_state: Stop to debug!!"); stop
 end subroutine MOM_initialize_state
 
 !> Reads the layer thicknesses or interface heights from a file.
