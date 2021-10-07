@@ -97,6 +97,7 @@ use MOM_horizontal_regridding, only : horiz_interp_and_extrap_tracer
 use MOM_oda_incupd, only: oda_incupd_CS, initialize_oda_incupd_fixed, initialize_oda_incupd
 use MOM_oda_incupd, only: set_up_oda_incupd_field, set_up_oda_incupd_vel_field
 use MOM_oda_incupd, only: calc_oda_increments, output_oda_incupd_inc
+use MOM_python_embedding, only: runpyF_1_3d
 
 implicit none ; private
 
@@ -653,9 +654,9 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, US, PF, dirs, &
          Y(I) = 0.0D0
   EndDo
 
-  Call RunPy('test.py', 'my_test', X, Nx, Y, Ny) !This worked
-  !Call RunPy_3darray('test.py', 'my_test', h, is,ie,js,je,1,nz)
-  if (is_root_pe()) call MOM_mesg("MOM_initialize_state: Stop to debug!!"); stop
+  !Call RunPy('test.py', 'my_test', X, Nx, Y, Ny) !This worked
+  Call runpyF_1_3d('test.py', 'py_test1', 'tv%T',  tv%T)
+  if (is_root_pe()) call MOM_mesg("MOM_initialize_state: Stop here to debug!!"); stop
 end subroutine MOM_initialize_state
 
 !> Reads the layer thicknesses or interface heights from a file.
