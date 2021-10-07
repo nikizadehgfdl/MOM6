@@ -185,10 +185,6 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, US, PF, dirs, &
 # include "version_variable.h"
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
-      Integer Nx, Ny
-      Parameter(Nx = 15)
-      Parameter(Ny = 15)
-      Real*8 X(Nx), Y(Ny)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
@@ -649,12 +645,6 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, US, PF, dirs, &
   endif
 
   if (is_root_pe()) call MOM_mesg("MOM_initialize_state: Testing Python embedding ...")
-  Do I = 1, Nx
-         X(I) = DBLE(I)
-         Y(I) = 0.0D0
-  EndDo
-
-  !Call RunPy('test.py', 'my_test', X, Nx, Y, Ny) !This worked
   Call runpyF_1_3d('test.py', 'py_test1', 'tv%T',  tv%T)
   if (is_root_pe()) call MOM_mesg("MOM_initialize_state: Stop here to debug!!"); stop
 end subroutine MOM_initialize_state
