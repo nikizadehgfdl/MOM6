@@ -64,6 +64,7 @@ public update_OBC_ramp
 public rotate_OBC_config
 public rotate_OBC_init
 public initialize_segment_data
+public setup_OBC_tracer_reservoirs
 
 integer, parameter, public :: OBC_NONE = 0      !< Indicates the use of no open boundary
 integer, parameter, public :: OBC_SIMPLE = 1    !< Indicates the use of a simple inflow open boundary
@@ -4809,7 +4810,7 @@ subroutine fill_obgc_segments(G, GV, OBC, tr_ptr, tr_name)
     endif
     segment%tr_Reg%Tr(nt)%tres(:,:,:) = segment%tr_Reg%Tr(nt)%t(:,:,:)
   enddo
-  call setup_OBC_tracer_reservoirs(GV, OBC, .true.) ! Skip T and S to avoid restart bug
+!  call setup_OBC_tracer_reservoirs(GV, OBC, .true.) ! Skip T and S to avoid restart bug
 end subroutine fill_obgc_segments
 
 subroutine fill_temp_salt_segments(G, GV, OBC, tv)
@@ -4868,7 +4869,7 @@ subroutine fill_temp_salt_segments(G, GV, OBC, tv)
     segment%tr_Reg%Tr(2)%tres(:,:,:) = segment%tr_Reg%Tr(2)%t(:,:,:)
   enddo
 
-  call setup_OBC_tracer_reservoirs(GV, OBC)
+!  call setup_OBC_tracer_reservoirs(GV, OBC)
 end subroutine fill_temp_salt_segments
 
 !> Find the region outside of all open boundary segments and
