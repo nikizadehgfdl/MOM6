@@ -2422,11 +2422,6 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
            CS%dyn_unsplit_CSp)
   endif
 
-  ! This subroutine calls user-specified tracer registration routines.
-  ! Additional calls can be added to MOM_tracer_flow_control.F90.
-  call call_tracer_register(HI, GV, US, param_file, CS%tracer_flow_CSp, &
-                            CS%tracer_Reg, restart_CSp)
-
   call MEKE_alloc_register_restart(HI, param_file, CS%MEKE, restart_CSp)
   call set_visc_register_restarts(HI, GV, param_file, CS%visc, restart_CSp)
   call mixedlayer_restrat_register_restarts(HI, param_file, &
@@ -2461,7 +2456,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   ! Additional calls can be added to MOM_tracer_flow_control.F90.
   ! Needs to be after registering temperature and salinity OBCs above,
   ! or else the user-specified tracers will be first.
-  call call_tracer_register(dG%HI, GV, US, param_file, CS%tracer_flow_CSp, &
+  call call_tracer_register(HI, GV, US, param_file, CS%tracer_flow_CSp, &
                             CS%tracer_Reg, restart_CSp, CS%OBC)
 
   if (associated(CS%OBC)) then
