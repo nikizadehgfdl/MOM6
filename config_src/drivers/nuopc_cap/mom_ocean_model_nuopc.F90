@@ -41,7 +41,6 @@ use MOM_time_manager,        only : operator(+), operator(-), operator(*), opera
 use MOM_time_manager,        only : operator(/=), operator(<=), operator(>=)
 use MOM_time_manager,        only : operator(<), real_to_time_type, time_type_to_real
 use time_interp_external_mod,only : time_interp_external_init
-use MOM_tracer_flow_control, only : call_tracer_register, tracer_flow_control_init
 use MOM_tracer_flow_control, only : call_tracer_flux_init
 use MOM_unit_scaling,        only : unit_scale_type
 use MOM_variables,           only : surface
@@ -63,6 +62,7 @@ use MOM_surface_forcing_nuopc, only : surface_forcing_init, convert_IOB_to_fluxe
 use MOM_surface_forcing_nuopc, only : convert_IOB_to_forces, ice_ocn_bnd_type_chksum
 use MOM_surface_forcing_nuopc, only : ice_ocean_boundary_type, surface_forcing_CS
 use MOM_surface_forcing_nuopc, only : forcing_save_restart
+use get_stochy_pattern_mod,  only : write_stoch_restart_ocn
 use iso_fortran_env,           only : int64
 
 #include <MOM_memory.h>
@@ -147,6 +147,7 @@ type, public :: ocean_state_type ; private
   integer :: nstep = 0        !< The number of calls to update_ocean.
   logical :: use_ice_shelf    !< If true, the ice shelf model is enabled.
   logical,public :: use_waves !< If true use wave coupling.
+  character(len=40) :: wave_method !< Wave coupling method.
 
   logical :: icebergs_alter_ocean !< If true, the icebergs can change ocean the
                               !! ocean dynamics and forcing fluxes.
@@ -176,6 +177,10 @@ type, public :: ocean_state_type ; private
                               !! steps can span multiple coupled time steps.
   logical :: diabatic_first   !< If true, apply diabatic and thermodynamic
                               !! processes before time stepping the dynamics.
+  logical :: do_sppt         !< If true, stochastically perturb the diabatic and
+                             !! write restarts
+  logical :: pert_epbl       !< If true, then randomly perturb the KE dissipation and
+                             !! genration termsand write restarts
 
   real :: eps_omesh           !< Max allowable difference between ESMF mesh and MOM6
                               !! domain coordinates
@@ -242,6 +247,7 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
                                               !! tracer fluxes, and can be used to spawn related
                                               !! internal variables in the ice model.
   character(len=*), optional, intent(in) :: input_restart_file !< If present, name of restart file to read
+
   ! Local variables
   real :: Rho0        ! The Boussinesq ocean density, in kg m-3.
   real :: G_Earth     ! The gravitational acceleration in m s-2.
@@ -249,7 +255,9 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
                       !! The actual depth over which melt potential is computed will
                       !! min(HFrz, OBLD), where OBLD is the boundary layer depth.
                       !! If HFrz <= 0 (default), melt potential will not be computed.
-  logical :: use_melt_pot!< If true, allocate melt_potential array
+  logical :: use_melt_pot !< If true, allocate melt_potential array
+  logical :: use_CFC  !< If true, allocated arrays for surface CFCs.
+
 
 ! This include declares and sets the variable "version".
 #include "version_variable.h"
@@ -368,13 +376,17 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
     use_melt_pot=.false.
   endif
 
+  call get_param(param_file, mdl, "USE_CFC_CAP", use_CFC, &
+                 default=.false., do_not_log=.true.)
+
   !   Consider using a run-time flag to determine whether to do the diagnostic
   ! vertical integrals, since the related 3-d sums are not negligible in cost.
   call allocate_surface_state(OS%sfc_state, OS%grid, use_temperature, &
-                              do_integrals=.true., gas_fields_ocn=gas_fields_ocn, use_meltpot=use_melt_pot)
+                              do_integrals=.true., gas_fields_ocn=gas_fields_ocn, &
+                              use_meltpot=use_melt_pot, use_cfcs=use_CFC)
 
   call surface_forcing_init(Time_in, OS%grid, OS%US, param_file, OS%diag, &
-                            OS%forcing_CSp, OS%restore_salinity, OS%restore_temp)
+                            OS%forcing_CSp, OS%restore_salinity, OS%restore_temp, OS%use_waves)
 
   if (OS%use_ice_shelf)  then
     call initialize_ice_shelf(param_file, OS%grid, OS%Time, OS%ice_shelf_CSp, &
@@ -386,8 +398,12 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
       call allocate_forcing_type(OS%grid, OS%fluxes, shelf=.true.)
   endif
 
+  call allocate_forcing_type(OS%grid, OS%fluxes, waves=.true.)
   call get_param(param_file, mdl, "USE_WAVES", OS%Use_Waves, &
        "If true, enables surface wave modules.", default=.false.)
+  if (OS%Use_Waves) then
+    call get_param(param_file, mdl, "WAVE_METHOD", OS%wave_method, default="EMPTY", do_not_log=.true.)
+  endif
   ! MOM_wave_interface_init is called regardless of the value of USE_WAVES because
   ! it also initializes statistical waves.
   call MOM_wave_interface_init(OS%Time, OS%grid, OS%GV, OS%US, param_file, OS%Waves, OS%diag)
@@ -412,6 +428,19 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
     call convert_state_to_ocean_type(OS%sfc_state, Ocean_sfc, OS%grid, OS%US)
 
   endif
+
+  call extract_surface_state(OS%MOM_CSp, OS%sfc_state)
+! get number of processors and PE list for stocasthci physics initialization
+  call get_param(param_file, mdl, "DO_SPPT", OS%do_sppt, &
+                 "If true, then stochastically perturb the thermodynamic "//&
+                 "tendencies of T,S, and h.  Amplitude and correlations are "//&
+                 "controlled by the nam_stoch namelist in the UFS model only.", &
+                 default=.false.)
+  call get_param(param_file, mdl, "PERT_EPBL", OS%pert_epbl, &
+                 "If true, then stochastically perturb the kinetic energy "//&
+                 "production and dissipation terms.  Amplitude and correlations are "//&
+                 "controlled by the nam_stoch namelist in the UFS model only.", &
+                 default=.false.)
 
   call close_param_file(param_file)
   call diag_mediator_close_registration(OS%diag)
@@ -572,7 +601,9 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
   call set_net_mass_forcing(OS%fluxes, OS%forces, OS%grid, OS%US)
 
   if (OS%use_waves) then
-    call Update_Surface_Waves(OS%grid, OS%GV, OS%US, OS%time, ocean_coupling_time_step, OS%waves, OS%forces)
+    if (OS%wave_method /= "EFACTOR") then
+      call Update_Surface_Waves(OS%grid, OS%GV, OS%US, OS%time, ocean_coupling_time_step, OS%waves, OS%forces)
+    endif
   endif
 
   if (OS%nstep==0) then
@@ -671,12 +702,15 @@ subroutine update_ocean_model(Ice_ocean_boundary, OS, Ocean_sfc, &
 end subroutine update_ocean_model
 
 !> This subroutine writes out the ocean model restart file.
-subroutine ocean_model_restart(OS, timestamp, restartname, num_rest_files)
+subroutine ocean_model_restart(OS, timestamp, restartname, stoch_restartname, num_rest_files)
   type(ocean_state_type),     pointer    :: OS !< A pointer to the structure containing the
                                                !! internal ocean state being saved to a restart file
   character(len=*), optional, intent(in) :: timestamp !< An optional timestamp string that should be
                                                !! prepended to the file name. (Currently this is unused.)
   character(len=*), optional, intent(in) :: restartname !< Name of restart file to use
+                                               !! This option distinguishes the cesm interface from the
+                                               !! non-cesm interface
+  character(len=*), optional, intent(in) :: stoch_restartname !< Name of restart file to use
                                                !! This option distinguishes the cesm interface from the
                                                !! non-cesm interface
   integer, optional, intent(out)         :: num_rest_files !< number of restart files written
@@ -716,6 +750,11 @@ subroutine ocean_model_restart(OS, timestamp, restartname, num_rest_files)
         if (OS%use_ice_shelf) then
            call ice_shelf_save_restart(OS%Ice_shelf_CSp, OS%Time, OS%dirs%restart_output_dir)
         endif
+     endif
+  endif
+  if (present(stoch_restartname)) then
+      if (OS%do_sppt .OR. OS%pert_epbl) then
+         call write_stoch_restart_ocn('RESTART/'//trim(stoch_restartname))
      endif
   endif
 
@@ -1002,15 +1041,16 @@ end subroutine ocean_model_flux_init
 
 !> This interface allows certain properties that are stored in the ocean_state_type to be
 !! obtained.
-subroutine query_ocean_state(OS, use_waves, NumWaveBands, Wavenumbers, unscale)
+subroutine query_ocean_state(OS, use_waves, NumWaveBands, Wavenumbers, unscale, wave_method)
   type(ocean_state_type),       intent(in)  :: OS      !< The structure with the complete ocean state
   logical,            optional, intent(out) :: use_waves !< Indicates whether surface waves are in use
   integer,            optional, intent(out) :: NumWaveBands !< If present, this gives the number of
                                                        !! wavenumber partitions in the wave discretization
   real, dimension(:), optional, intent(out) :: Wavenumbers !< If present, this gives the characteristic
                                                        !! wavenumbers of the wave discretization [m-1 or Z-1 ~> m-1]
-    logical,          optional, intent(in)  :: unscale !< If present and true, undo any dimensional
+  logical,            optional, intent(in)  :: unscale !< If present and true, undo any dimensional
                                                        !! rescaling and return dimensional values in MKS units
+  character(len=40),  optional, intent(out) :: wave_method !< Wave coupling method.
 
   logical :: undo_scaling
   undo_scaling = .false. ; if (present(unscale)) undo_scaling = unscale
@@ -1022,6 +1062,7 @@ subroutine query_ocean_state(OS, use_waves, NumWaveBands, Wavenumbers, unscale)
   elseif (present(Wavenumbers)) then
     call query_wave_properties(OS%Waves, WaveNumbers=WaveNumbers)
   endif
+  if (present(wave_method)) wave_method = OS%wave_method
 
 end subroutine query_ocean_state
 
