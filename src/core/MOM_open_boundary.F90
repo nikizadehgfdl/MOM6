@@ -80,8 +80,8 @@ integer, parameter         :: MAX_OBC_FIELDS = 100  !< Maximum number of data fi
 type, public :: OBC_segment_data_type
   integer :: fid                            !< handle from FMS associated with segment data on disk
   integer :: fid_dz                         !< handle from FMS associated with segment thicknesses on disk
-  character(len=32)                :: name       !< a name identifier for the segment data
-  character(len=8)                :: name   !< a name identifier for the segment data
+  character(len=32)                :: name  !< a name identifier for the segment data
+  character(len=8)                 :: genre !< a family identifier for the segment data  
   real, allocatable :: buffer_src(:,:,:)    !< buffer for segment data located at cell faces
                                             !! and on the original vertical grid
   integer                         :: nk_src !< Number of vertical levels in the source data
@@ -3543,7 +3543,7 @@ function get_tracer_index(OBC_seg,tr_name)
   integer :: get_tracer_index, it
   get_tracer_index=-1
   it=1
-  do while(associated(OBC_seg%tr_Reg%Tr(it)%t))
+  do while(allocated(OBC_seg%tr_Reg%Tr(it)%t))
     if (trim(OBC_seg%tr_Reg%Tr(it)%name) == trim(tr_name)) then
       get_tracer_index=it
       exit
@@ -4405,7 +4405,7 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
         if(nt .lt. 0) then
           call MOM_error(FATAL,"update_OBC_segment_data: Did not find tracer "//trim(segment%field(m)%name))
         endif
-        if (associated(segment%field(m)%buffer_dst)) then
+        if (allocatedZ(segment%field(m)%buffer_dst)) then
           do k=1,nz; do j=js_obc2, je_obc; do i=is_obc2,ie_obc
             segment%tr_Reg%Tr(nt)%t(i,j,k) = segment%field(m)%buffer_dst(i,j,k)
           enddo ; enddo ; enddo
