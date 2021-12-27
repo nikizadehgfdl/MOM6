@@ -4405,7 +4405,7 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
         if(nt .lt. 0) then
           call MOM_error(FATAL,"update_OBC_segment_data: Did not find tracer "//trim(segment%field(m)%name))
         endif
-        if (allocatedZ(segment%field(m)%buffer_dst)) then
+        if (allocated(segment%field(m)%buffer_dst)) then
           do k=1,nz; do j=js_obc2, je_obc; do i=is_obc2,ie_obc
             segment%tr_Reg%Tr(nt)%t(i,j,k) = segment%field(m)%buffer_dst(i,j,k)
           enddo ; enddo ; enddo
