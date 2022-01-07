@@ -118,6 +118,7 @@ contains
     type(g_tracer_type), pointer      :: g_tracer,g_tracer_next
     character(len=fm_string_len)      :: g_tracer_name,longname,units
     character(len=fm_string_len)      :: obc_src_file_name,obc_src_field_name
+    real                              :: lfac_in,lfac_out
     real, dimension(:,:,:,:), pointer   :: tr_field
     real, dimension(:,:,:), pointer     :: tr_ptr
     real, dimension(HI%isd:HI%ied, HI%jsd:HI%jed,GV%ke)         :: grid_tmask
@@ -210,9 +211,9 @@ contains
                               restart_CS=restart_CS, mandatory=.not.CS%tracers_may_reinit)
          if (associated(CS%OBC)) &
               call g_tracer_get_obc_segment_props(g_tracer,g_tracer_name,obc_has ,&
-                                                  obc_src_file_name,obc_src_field_name )
+                                                  obc_src_file_name,obc_src_field_name,lfac_in,lfac_out)
            if(obc_has) then
-              call set_obgc_segments_props(g_tracer_name,obc_src_file_name,obc_src_field_name)
+              call set_obgc_segments_props(g_tracer_name,obc_src_file_name,obc_src_field_name,lfac_in,lfac_out)
               call register_obgc_segments(GV, CS%OBC, tr_Reg, param_file, g_tracer_name)
            endif
        else
