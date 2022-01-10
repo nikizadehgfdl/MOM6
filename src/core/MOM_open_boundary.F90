@@ -210,13 +210,13 @@ type, public :: OBC_segment_type
                                               !! can occur [T-1 ~> s-1].
   type(segment_tracer_registry_type), pointer  :: tr_Reg=> NULL()!< A pointer to the tracer registry for the segment.
   type(hor_index_type) :: HI !< Horizontal index ranges
-  real, allocatable :: Tr_InvLscale_out       !< An effective inverse length scale for restoring
-                                              !! the tracer concentration in a fictitious
-                                              !! reservoir towards interior values when flow
-                                              !! is exiting the domain [L-1 ~> m-1]
-  real, allocatable :: Tr_InvLscale_in        !< An effective inverse length scale for restoring
-                                              !! the tracer concentration towards an externally
-                                              !! imposed value when flow is entering [L-1 ~> m-1]
+  real :: Tr_InvLscale_out       !< An effective inverse length scale for restoring
+                                 !! the tracer concentration in a fictitious
+                                 !! reservoir towards interior values when flow
+                                 !! is exiting the domain [L-1 ~> m-1]
+  real :: Tr_InvLscale_in        !< An effective inverse length scale for restoring
+                                 !! the tracer concentration towards an externally
+                                 !! imposed value when flow is entering [L-1 ~> m-1]
 end type OBC_segment_type
 
 !> Open-boundary data
