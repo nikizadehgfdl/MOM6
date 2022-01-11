@@ -88,7 +88,11 @@ type, public :: OBC_segment_data_type
   real, allocatable :: dz_src(:,:,:)        !< vertical grid cell spacing of the incoming segment
                                             !! data, set in [Z ~> m] then scaled to [H ~> m or kg m-2]
   real, allocatable :: buffer_dst(:,:,:)    !< buffer src data remapped to the target vertical grid
-  real                            :: value              !< constant value if fid is equal to -1
+  real                            :: value  !< constant value if fid is equal to -1
+  real              :: resrv_lfac_in = 1.   !< reservoir inverse length scale factor for IN direction per field
+                                            !< the general 1/Lscale_IN is multiplied by this factor for each tracer
+  real              :: resrv_lfac_out= 1.   !< reservoir inverse length scale factor for OUT direction per field
+                                            !< the general 1/Lscale_OUT is multiplied by this factor for each tracer
 end type OBC_segment_data_type
 
 !> Tracer on OBC segment data structure, for putting into a segment tracer registry.
@@ -206,13 +210,13 @@ type, public :: OBC_segment_type
                                               !! can occur [T-1 ~> s-1].
   type(segment_tracer_registry_type), pointer  :: tr_Reg=> NULL()!< A pointer to the tracer registry for the segment.
   type(hor_index_type) :: HI !< Horizontal index ranges
-  real :: Tr_InvLscale_out                                  !< An effective inverse length scale for restoring
-                                                            !! the tracer concentration in a fictitious
-                                                            !! reservoir towards interior values when flow
-                                                            !! is exiting the domain [L-1 ~> m-1]
-  real :: Tr_InvLscale_in                                   !< An effective inverse length scale for restoring
-                                                            !! the tracer concentration towards an externally
-                                                            !! imposed value when flow is entering [L-1 ~> m-1]
+  real :: Tr_InvLscale_out       !< An effective inverse length scale for restoring
+                                 !! the tracer concentration in a fictitious
+                                 !! reservoir towards interior values when flow
+                                 !! is exiting the domain [L-1 ~> m-1]
+  real :: Tr_InvLscale_in        !< An effective inverse length scale for restoring
+                                 !! the tracer concentration towards an externally
+                                 !! imposed value when flow is entering [L-1 ~> m-1]
 end type OBC_segment_type
 
 !> Open-boundary data
@@ -343,6 +347,7 @@ type, private :: external_tracers_segments_props
    character(len=128) :: tracer_name
    character(len=128) :: tracer_src_file
    character(len=128) :: tracer_src_field
+   real               :: lfac_in,lfac_out
 end type external_tracers_segments_props
 type(external_tracers_segments_props), pointer, save :: obgc_segments_props => NULL() !< Linked-list of obgc tracers properties
 integer, save :: num_obgc_tracers = 0  !< Keeps the total number of obgc tracers
@@ -753,7 +758,8 @@ subroutine initialize_segment_data(G, OBC, PF)
            value, filename, fieldname)
       else
        segment%field(m)%genre='obgc'
-       call get_obgc_segments_props(obgc_segments_props_list,fields(m),filename,fieldname)
+       call get_obgc_segments_props(obgc_segments_props_list,fields(m),filename,fieldname,&
+                                    segment%field(m)%resrv_lfac_in,segment%field(m)%resrv_lfac_out)
        do mm=1,num_fields
           if(trim(fields(m))==trim(fields(mm))) then
              if (is_root_pe()) &
@@ -4698,32 +4704,36 @@ subroutine register_temp_salt_segments(GV, OBC, tr_Reg, param_file)
 end subroutine register_temp_salt_segments
 
 !> Sets the OBC properties of external obgc tracers, such as their source file and field name
-subroutine set_obgc_segments_props(tr_name,obc_src_file_name,obc_src_field_name)
-  character(len=*),           intent(in)    :: tr_name            !< Tracer name
-  character(len=*),           intent(in)    :: obc_src_file_name  !< OBC source file name
-  character(len=*),           intent(in)    :: obc_src_field_name !< name of the field in the source file
-
+subroutine set_obgc_segments_props(tr_name,obc_src_file_name,obc_src_field_name,lfac_in,lfac_out)
+  character(len=*),  intent(in) :: tr_name            !< Tracer name
+  character(len=*),  intent(in) :: obc_src_file_name  !< OBC source file name
+  character(len=*),  intent(in) :: obc_src_field_name !< name of the field in the source file
+  real,              intent(in) :: lfac_in,lfac_out
   type(external_tracers_segments_props),pointer :: node_ptr => NULL()
   allocate(node_ptr)
   node_ptr%tracer_name = trim(tr_name)
   node_ptr%tracer_src_file = trim(obc_src_file_name)
   node_ptr%tracer_src_field = trim(obc_src_field_name)
+  node_ptr%lfac_in  = lfac_in
+  node_ptr%lfac_out = lfac_out
   !Reversed Linked List implementation! Make this new node to be the head of the list.
   node_ptr%next => obgc_segments_props
   obgc_segments_props => node_ptr
   num_obgc_tracers = num_obgc_tracers+1
 end subroutine set_obgc_segments_props
 
-!> Get the OBC properties of external obgc tracers, such as their source file and field name
-subroutine get_obgc_segments_props(node, tr_name,obc_src_file_name,obc_src_field_name)
+!> Get the OBC properties of external obgc tracers, such as their source file, field name, reservoir length scale factors
+subroutine get_obgc_segments_props(node, tr_name,obc_src_file_name,obc_src_field_name,lfac_in,lfac_out)
   type(external_tracers_segments_props),pointer :: node 
-  character(len=*),           intent(out)    :: tr_name            !< Tracer name
-  character(len=*),           intent(out)    :: obc_src_file_name  !< OBC source file name
-  character(len=*),           intent(out)    :: obc_src_field_name !< name of the field in the source file
-  
+  character(len=*), intent(out) :: tr_name            !< Tracer name
+  character(len=*), intent(out) :: obc_src_file_name  !< OBC source file name
+  character(len=*), intent(out) :: obc_src_field_name !< name of the field in the source file
+  real,             intent(out) :: lfac_in,lfac_out   !< multiplicative factors for inverse reservoir length scale
   tr_name=trim(node%tracer_name)
   obc_src_file_name=trim(node%tracer_src_file)
   obc_src_field_name=trim(node%tracer_src_field)
+  lfac_in =node%lfac_in
+  lfac_out=node%lfac_out
   !pop the head.
   node => node%next
   
@@ -5243,9 +5253,9 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
         if (G%mask2dT(I+ishift,j) == 0.0) cycle
         ! Update the reservoir tracer concentration implicitly using a Backward-Euler timestep
         do m=1,ntr ; if (allocated(segment%tr_Reg%Tr(m)%tres)) then ; do k=1,nz
-          u_L_out = max(0.0, (idir*uhr(I,j,k))*segment%Tr_InvLscale_out / &
+          u_L_out = max(0.0, (idir*uhr(I,j,k))*segment%Tr_InvLscale_out*segment%field(m)%resrv_lfac_out / &
                     ((h(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
-          u_L_in  = min(0.0, (idir*uhr(I,j,k))*segment%Tr_InvLscale_in  / &
+          u_L_in  = min(0.0, (idir*uhr(I,j,k))*segment%Tr_InvLscale_in*segment%field(m)%resrv_lfac_in  / &
                     ((h(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
           fac1 = 1.0 + (u_L_out-u_L_in)
           segment%tr_Reg%Tr(m)%tres(I,j,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(I,j,k) + &
@@ -5268,9 +5278,9 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
         if (G%mask2dT(i,j+jshift) == 0.0) cycle
         ! Update the reservoir tracer concentration implicitly using a Backward-Euler timestep
         do m=1,ntr ; if (allocated(segment%tr_Reg%Tr(m)%tres)) then ; do k=1,nz
-          v_L_out = max(0.0, (jdir*vhr(i,J,k))*segment%Tr_InvLscale_out / &
+          v_L_out = max(0.0, (jdir*vhr(i,J,k))*segment%Tr_InvLscale_out*segment%field(m)%resrv_lfac_out / &
                     ((h(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
-          v_L_in  = min(0.0, (jdir*vhr(i,J,k))*segment%Tr_InvLscale_in  / &
+          v_L_in  = min(0.0, (jdir*vhr(i,J,k))*segment%Tr_InvLscale_in*segment%field(m)%resrv_lfac_in  / &
                     ((h(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
           fac1 = 1.0 + (v_L_out-v_L_in)
           segment%tr_Reg%Tr(m)%tres(i,J,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(i,J,k) + &
@@ -5597,7 +5607,7 @@ subroutine rotate_OBC_segment_config(segment_in, G_in, segment, G, turns)
   end select
 
   ! These are conditionally set if Lscale_{in,out} are present
-  segment%Tr_InvLscale_in = segment_in%Tr_InvLscale_in
+  segment%Tr_InvLscale_in  = segment_in%Tr_InvLscale_in
   segment%Tr_InvLscale_out = segment_in%Tr_InvLscale_out
 end subroutine rotate_OBC_segment_config
 
