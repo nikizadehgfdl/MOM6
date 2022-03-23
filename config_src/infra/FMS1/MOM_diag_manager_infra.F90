@@ -10,7 +10,7 @@ module MOM_diag_manager_infra
 
 use diag_axis_mod,    only : fms_axis_init=>diag_axis_init
 use diag_axis_mod,    only : fms_get_diag_axis_name => get_diag_axis_name
-use diag_axis_mod,    only : EAST, NORTH
+!use diag_axis_mod,    only : EAST, NORTH
 use diag_data_mod,    only : null_axis_id
 use diag_manager_mod, only : fms_diag_manager_init => diag_manager_init
 use diag_manager_mod, only : fms_diag_manager_end => diag_manager_end
@@ -50,6 +50,7 @@ interface MOM_diag_field_add_attribute
   module procedure MOM_diag_field_add_attribute_i1d
 end interface MOM_diag_field_add_attribute
 
+integer :: EAST=1, NORTH=2
 
 ! Public interfaces
 public MOM_diag_axis_init
@@ -108,11 +109,11 @@ integer function MOM_diag_axis_init(name, data, units, cart_name, long_name, MOM
     if (coarsening == 1) then
       MOM_diag_axis_init = fms_axis_init(name, data, units, cart_name, long_name=long_name, &
               direction=direction, set_name=set_name, edges=edges, &
-              domain2=MOM_domain%mpp_domain, domain_position=position)
+              domain2=MOM_domain%mpp_domain)! , domain_position=position)
     elseif (coarsening == 2) then
       MOM_diag_axis_init = fms_axis_init(name, data, units, cart_name, long_name=long_name, &
               direction=direction, set_name=set_name, edges=edges, &
-              domain2=MOM_domain%mpp_domain_d2, domain_position=position)
+              domain2=MOM_domain%mpp_domain_d2)!, domain_position=position)
     else
       call MOM_error(FATAL, "diag_axis_init called with an invalid value of coarsen.")
     endif
