@@ -4220,6 +4220,8 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
     ! Start second loop to update all fields now that data for all fields are available.
     ! (split because tides depend on multiple variables).
     do m = 1,segment%num_fields
+      !cycle if it is not the time to update OBGC tracers from source
+      if (trim(segment%field(m)%genre) == 'obgc' .and. (.not. OBC%update_OBC_seg_data)) cycle
       ! if (segment%field(m)%fid>0) then
       ! calculate external BT velocity and transport if needed
       if (trim(segment%field(m)%name) == 'U' .or. trim(segment%field(m)%name) == 'V') then
@@ -5256,8 +5258,6 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
    if (.not. associated(segment%tr_Reg)) cycle
    do m=1,ntr
     if (.not. allocated(segment%tr_Reg%Tr(m)%tres)) cycle
-    !OBGC tracers may have less frequent segment updates
-    if (trim(segment%field(m)%genre) == 'obgc' .and. (.not. OBC%update_OBC_seg_data)) cycle
 
     if (segment%is_E_or_W) then
       I = segment%HI%IsdB
