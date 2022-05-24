@@ -1036,7 +1036,6 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
 
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
-
   real, dimension(SZI_(CS%G),SZJ_(CS%G),SZK_(CS%G)+1) :: eta_por ! layer interface heights
                                                     !! for porous topo. [Z ~> m or 1/eta_to_m]
   G => CS%G ; GV => CS%GV ; US => CS%US ; IDs => CS%IDs
@@ -1082,6 +1081,17 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     call disable_averaging(CS%diag)
   endif
 
+  !OBC segment data update for some fields can be less frequent than others 
+  if(associated(CS%OBC)) then
+    CS%OBC%update_OBC_seg_data = .false.
+    if (CS%dt_obc_seg_period == 0.0) CS%OBC%update_OBC_seg_data = .true.
+    if (CS%dt_obc_seg_period > 0.0) then
+     if (Time_local >= CS%dt_obc_seg_time) then  !### Change >= to > here.
+      CS%OBC%update_OBC_seg_data = .true.
+      CS%dt_obc_seg_time = CS%dt_obc_seg_time + CS%dt_obc_seg_interval
+     endif
+    endif
+  endif
 
   if (CS%do_dynamics .and. CS%split) then !--------------------------- start SPLIT
     ! This section uses a split time stepping scheme for the dynamic equations,
@@ -1093,17 +1103,6 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
       if (Time_local >= CS%dtbt_reset_time) then  !### Change >= to > here.
         calc_dtbt = .true.
         CS%dtbt_reset_time = CS%dtbt_reset_time + CS%dtbt_reset_interval
-      endif
-    endif
-    !OBC segment data update for some fields can be less frequent than others 
-    if(associated(CS%OBC)) then
-      CS%OBC%update_OBC_seg_data = .false.
-      if (CS%dt_obc_seg_period == 0.0) CS%OBC%update_OBC_seg_data = .true.
-      if (CS%dt_obc_seg_period > 0.0) then
-       if (Time_local >= CS%dt_obc_seg_time) then  !### Change >= to > here.
-        CS%OBC%update_OBC_seg_data = .true.
-        CS%dt_obc_seg_time = CS%dt_obc_seg_time + CS%dt_obc_seg_interval
-       endif
       endif
     endif
 
@@ -2009,14 +2008,15 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  "DTBT will be set every dynamics time step. The default "//&
                  "is set by DT_THERM.  This is only used if SPLIT is true.", &
                  units="s", default=default_val, do_not_read=(dtbt > 0.0))
-
-    CS%dt_obc_seg_period = -1.0
-    call get_param(param_file, "MOM", "DT_OBC_SEG_UPDATE_OBGC", CS%dt_obc_seg_period, &
-                 "The time between OBC segment data updates for OBGC tracers. "//&
-                 "The default is set to DT.  This is only used if SPLIT is true.", &
-                 units="s", default=CS%dt)
-     
   endif
+
+  CS%dt_obc_seg_period = -1.0
+  call get_param(param_file, "MOM", "DT_OBC_SEG_UPDATE_OBGC", CS%dt_obc_seg_period, &
+               "The time between OBC segment data updates for OBGC tracers. "//&
+               "This must be an integer multiple of DT and DT_THERM. "//&
+               "The default is set to DT.", &
+               units="s", default=CS%dt)
+     
 
   ! This is here in case these values are used inappropriately.
   use_frazil = .false. ; bound_salinity = .false.
@@ -2740,19 +2740,6 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
         CS%dtbt_reset_time = CS%dtbt_reset_time - CS%dtbt_reset_interval
       endif
     endif
-    !Set OBC segment data update period
-    if (associated(CS%OBC) .and. CS%dt_obc_seg_period > 0.0) then
-      CS%dt_obc_seg_interval = real_to_time(CS%dt_obc_seg_period)
-      ! Set dt_obc_seg_time to be the next even multiple of dt_obc_seg_interval.
-      CS%dt_obc_seg_time = Time_init + CS%dt_obc_seg_interval * &
-                                 ((Time - Time_init) / CS%dt_obc_seg_interval)
-      if ((CS%dt_obc_seg_time > Time) .and. CS%OBC%update_OBC_seg_data) then
-        ! Back up dtbt_reset_time one interval to force dtbt to be calculated,
-        ! because the restart was not aligned with the interval to recalculate
-        ! dtbt, and dtbt was not read from a restart file.
-        CS%dt_obc_seg_time = CS%dt_obc_seg_time - CS%dt_obc_seg_interval
-      endif
-    endif
   elseif (CS%use_RK2) then
     call initialize_dyn_unsplit_RK2(CS%u, CS%v, CS%h, Time, G, GV, US,     &
             param_file, diag, CS%dyn_unsplit_RK2_CSp,                      &
@@ -2765,6 +2752,12 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
             CS%ADp, CS%CDp, MOM_internal_state, CS%OBC,                    &
             CS%update_OBC_CSp, CS%ALE_CSp, CS%set_visc_CSp, CS%visc, dirs, &
             CS%ntrunc, cont_stencil=CS%cont_stencil)
+  endif
+
+  !Set OBC segment data update period
+  if (associated(CS%OBC) .and. CS%dt_obc_seg_period > 0.0) then
+    CS%dt_obc_seg_interval = real_to_time(CS%dt_obc_seg_period)
+    CS%dt_obc_seg_time = Time + CS%dt_obc_seg_interval
   endif
 
   call callTree_waypoint("dynamics initialized (initialize_MOM)")

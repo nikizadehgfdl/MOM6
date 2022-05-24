@@ -64,6 +64,7 @@ public update_OBC_ramp
 public rotate_OBC_config
 public rotate_OBC_init
 public initialize_segment_data
+public setup_OBC_tracer_reservoirs
 
 integer, parameter, public :: OBC_NONE = 0      !< Indicates the use of no open boundary
 integer, parameter, public :: OBC_SIMPLE = 1    !< Indicates the use of a simple inflow open boundary
@@ -4219,6 +4220,8 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
     ! Start second loop to update all fields now that data for all fields are available.
     ! (split because tides depend on multiple variables).
     do m = 1,segment%num_fields
+      !cycle if it is not the time to update OBGC tracers from source
+      if (trim(segment%field(m)%genre) == 'obgc' .and. (.not. OBC%update_OBC_seg_data)) cycle
       ! if (segment%field(m)%fid>0) then
       ! calculate external BT velocity and transport if needed
       if (trim(segment%field(m)%name) == 'U' .or. trim(segment%field(m)%name) == 'V') then
@@ -4809,7 +4812,7 @@ subroutine fill_obgc_segments(G, GV, OBC, tr_ptr, tr_name)
     endif
     segment%tr_Reg%Tr(nt)%tres(:,:,:) = segment%tr_Reg%Tr(nt)%t(:,:,:)
   enddo
-  call setup_OBC_tracer_reservoirs(GV, OBC, .true.) ! Skip T and S to avoid restart bug
+!  call setup_OBC_tracer_reservoirs(GV, OBC, .true.) ! Skip T and S to avoid restart bug
 end subroutine fill_obgc_segments
 
 subroutine fill_temp_salt_segments(G, GV, OBC, tv)
@@ -4868,7 +4871,7 @@ subroutine fill_temp_salt_segments(G, GV, OBC, tv)
     segment%tr_Reg%Tr(2)%tres(:,:,:) = segment%tr_Reg%Tr(2)%t(:,:,:)
   enddo
 
-  call setup_OBC_tracer_reservoirs(GV, OBC)
+!  call setup_OBC_tracer_reservoirs(GV, OBC)
 end subroutine fill_temp_salt_segments
 
 !> Find the region outside of all open boundary segments and
@@ -5233,12 +5236,29 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
   real :: fac1            ! The denominator of the expression for tracer updates [nondim]
   integer :: i, j, k, m, n, ntr, nz
   integer :: ishift, idir, jshift, jdir
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h1
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)) :: uhr1
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)) :: vhr1
 
+  if(.NOT. associated(OBC)) return
   nz = GV%ke
   ntr = Reg%ntr
-  if (associated(OBC)) then ; if (OBC%OBC_pe) then ; do n=1,OBC%number_of_segments
-    segment=>OBC%segment(n)
-    if (.not. associated(segment%tr_Reg)) cycle
+  !Input arrays h,uhr,vhr have not had halo updates since they were last updated outside this routine.
+  !This was causing restart issues for experiments that include tracers with reservoirs.
+  !We need to perform halo updates for input arrays, since they are intent(in) they cannot be modified.
+  !Hence we make copies of them.
+  h1=h
+  uhr1=uhr
+  vhr1=vhr
+  call pass_var(h1, G%Domain)
+  call pass_vector(uhr1,vhr1, G%Domain)
+
+  if (OBC%OBC_pe) then ; do n=1,OBC%number_of_segments
+   segment=>OBC%segment(n)
+   if (.not. associated(segment%tr_Reg)) cycle
+   do m=1,ntr
+    if (.not. allocated(segment%tr_Reg%Tr(m)%tres)) cycle
+
     if (segment%is_E_or_W) then
       I = segment%HI%IsdB
       do j=segment%HI%jsd,segment%HI%jed
@@ -5252,17 +5272,17 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
         ! Can keep this or take it out, either way
         if (G%mask2dT(I+ishift,j) == 0.0) cycle
         ! Update the reservoir tracer concentration implicitly using a Backward-Euler timestep
-        do m=1,ntr ; if (allocated(segment%tr_Reg%Tr(m)%tres)) then ; do k=1,nz
-          u_L_out = max(0.0, (idir*uhr(I,j,k))*segment%Tr_InvLscale_out*segment%field(m)%resrv_lfac_out / &
-                    ((h(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
-          u_L_in  = min(0.0, (idir*uhr(I,j,k))*segment%Tr_InvLscale_in*segment%field(m)%resrv_lfac_in  / &
-                    ((h(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
+        do k=1,nz
+          u_L_out = max(0.0, (idir*uhr1(I,j,k))*segment%Tr_InvLscale_out*segment%field(m)%resrv_lfac_out / &
+                    ((h1(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
+          u_L_in  = min(0.0, (idir*uhr1(I,j,k))*segment%Tr_InvLscale_in*segment%field(m)%resrv_lfac_in  / &
+                    ((h1(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
           fac1 = 1.0 + (u_L_out-u_L_in)
           segment%tr_Reg%Tr(m)%tres(I,j,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(I,j,k) + &
                             (u_L_out*Reg%Tr(m)%t(I+ishift,j,k) - &
                              u_L_in*segment%tr_Reg%Tr(m)%t(I,j,k)))
           if (allocated(OBC%tres_x)) OBC%tres_x(I,j,k,m) = segment%tr_Reg%Tr(m)%tres(I,j,k)
-        enddo ; endif ; enddo
+        enddo
       enddo
     elseif (segment%is_N_or_S) then
       J = segment%HI%JsdB
@@ -5277,20 +5297,21 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
         ! Can keep this or take it out, either way
         if (G%mask2dT(i,j+jshift) == 0.0) cycle
         ! Update the reservoir tracer concentration implicitly using a Backward-Euler timestep
-        do m=1,ntr ; if (allocated(segment%tr_Reg%Tr(m)%tres)) then ; do k=1,nz
-          v_L_out = max(0.0, (jdir*vhr(i,J,k))*segment%Tr_InvLscale_out*segment%field(m)%resrv_lfac_out / &
-                    ((h(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
-          v_L_in  = min(0.0, (jdir*vhr(i,J,k))*segment%Tr_InvLscale_in*segment%field(m)%resrv_lfac_in  / &
-                    ((h(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
+        do k=1,nz
+          v_L_out = max(0.0, (jdir*vhr1(i,J,k))*segment%Tr_InvLscale_out*segment%field(m)%resrv_lfac_out / &
+                    ((h1(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
+          v_L_in  = min(0.0, (jdir*vhr1(i,J,k))*segment%Tr_InvLscale_in*segment%field(m)%resrv_lfac_in  / &
+                    ((h1(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
           fac1 = 1.0 + (v_L_out-v_L_in)
           segment%tr_Reg%Tr(m)%tres(i,J,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(i,J,k) + &
                             (v_L_out*Reg%Tr(m)%t(i,J+jshift,k) - &
                              v_L_in*segment%tr_Reg%Tr(m)%t(i,J,k)))
           if (allocated(OBC%tres_y)) OBC%tres_y(i,J,k,m) = segment%tr_Reg%Tr(m)%tres(i,J,k)
-        enddo ; endif ; enddo
+        enddo
       enddo
     endif
-  enddo ; endif ; endif
+   enddo !m=1,ntr
+  enddo ; endif
 
 end subroutine update_segment_tracer_reservoirs
 
