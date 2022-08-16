@@ -5080,9 +5080,22 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
                           ! For salinity the units would be [ppt S-1 ~> 1]
   integer :: i, j, k, m, n, ntr, nz
   integer :: ishift, idir, jshift, jdir
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h1
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)) :: uhr1
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)) :: vhr1
 
   nz = GV%ke
   ntr = Reg%ntr
+  if(.NOT. associated(OBC)) return
+  !Input arrays h,uhr,vhr have not had halo updates since they were last updated outside this routine.
+  !This was causing restart issues for experiments that include tracers with reservoirs.
+  !We need to perform halo updates for input arrays, since they are intent(in) they cannot be modified.
+  !Hence we make copies of them.
+  h1=h
+  uhr1=uhr
+  vhr1=vhr
+  call pass_var(h1, G%Domain)
+  call pass_vector(uhr1,vhr1, G%Domain)
 
   if (associated(OBC)) then ; if (OBC%OBC_pe) then ; do n=1,OBC%number_of_segments
     segment=>OBC%segment(n)
@@ -5103,10 +5116,10 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
         do m=1,ntr
           I_scale = 1.0 ; if (segment%tr_Reg%Tr(m)%scale /= 0.0) I_scale = 1.0 / segment%tr_Reg%Tr(m)%scale
           if (allocated(segment%tr_Reg%Tr(m)%tres)) then ; do k=1,nz
-            u_L_out = max(0.0, (idir*uhr(I,j,k))*segment%Tr_InvLscale_out / &
-                      ((h(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
-            u_L_in  = min(0.0, (idir*uhr(I,j,k))*segment%Tr_InvLscale_in  / &
-                      ((h(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
+            u_L_out = max(0.0, (idir*uhr1(I,j,k))*segment%Tr_InvLscale_out / &
+                      ((h1(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
+            u_L_in  = min(0.0, (idir*uhr1(I,j,k))*segment%Tr_InvLscale_in  / &
+                      ((h1(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
             fac1 = 1.0 + (u_L_out-u_L_in)
             segment%tr_Reg%Tr(m)%tres(I,j,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(I,j,k) + &
                               (u_L_out*Reg%Tr(m)%t(I+ishift,j,k) - &
@@ -5131,10 +5144,10 @@ subroutine update_segment_tracer_reservoirs(G, GV, uhr, vhr, h, OBC, dt, Reg)
         do m=1,ntr
           I_scale = 1.0 ; if (segment%tr_Reg%Tr(m)%scale /= 0.0) I_scale = 1.0 / segment%tr_Reg%Tr(m)%scale
           if (allocated(segment%tr_Reg%Tr(m)%tres)) then ; do k=1,nz
-            v_L_out = max(0.0, (jdir*vhr(i,J,k))*segment%Tr_InvLscale_out / &
-                      ((h(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
-            v_L_in  = min(0.0, (jdir*vhr(i,J,k))*segment%Tr_InvLscale_in  / &
-                      ((h(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
+            v_L_out = max(0.0, (jdir*vhr1(i,J,k))*segment%Tr_InvLscale_out / &
+                      ((h1(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
+            v_L_in  = min(0.0, (jdir*vhr1(i,J,k))*segment%Tr_InvLscale_in  / &
+                      ((h1(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
             fac1 = 1.0 + (v_L_out-v_L_in)
             segment%tr_Reg%Tr(m)%tres(i,J,k) = (1.0/fac1)*(segment%tr_Reg%Tr(m)%tres(i,J,k) + &
                               (v_L_out*Reg%Tr(m)%t(i,J+jshift,k) - &
