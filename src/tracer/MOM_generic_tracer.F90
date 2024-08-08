@@ -345,8 +345,8 @@ contains
 
       if (.not.restart .or. (CS%tracers_may_reinit .and. &
           .not.query_initialized(tr_ptr, g_tracer_name, CS%restart_CSp))) then
-
-        if (g_tracer%requires_src_info ) then
+        !Initialize from source file provided by the tracer package
+        if (g_tracer%has_src_info ) then
           call MOM_error(NOTE,"initialize_MOM_generic_tracer: "//&
                               "initializing generic tracer "//trim(g_tracer_name)//&
                               " using MOM_initialize_tracer_from_Z ")
@@ -374,12 +374,9 @@ contains
               endif
             enddo ; enddo ; enddo
           endif
-        elseif(.not. g_tracer%requires_restart) then
-         !Do nothing for this tracer, it is initialized by the tracer package
-          call MOM_error(NOTE,"initialize_MOM_generic_tracer: "//&
-                            "skip initialization of generic tracer "//trim(g_tracer_name))
-        else !Do it old way if the tracer is not registered to start from a specific source file.
-            !This path should be deprecated if all generic tracers are required to start from specified sources.
+        !Do it old way if the tracer is not registered to start from a specific source file.
+        !This path should be deprecated if all generic tracers are required to start from specified sources.
+        elseif (g_tracer%requires_z_init) then
           if (len_trim(CS%IC_file) > 0) then
           !  Read the tracer concentrations from a netcdf file.
             if (.not.file_exists(CS%IC_file)) call MOM_error(FATAL, &
@@ -402,12 +399,10 @@ contains
                     " for tracer "//trim(g_tracer_name))
               call MOM_read_data(CS%IC_file, trim(g_tracer_name), tr_ptr, G%Domain)
             endif
-          else
-            call MOM_error(FATAL,"initialize_MOM_generic_tracer: "//&
-                    "check Generic Tracer IC filename "//trim(CS%IC_file)//&
-                    " for tracer "//trim(g_tracer_name))
           endif
-
+        else !Do nothing for this tracer, it is initialized by the tracer package
+          call MOM_error(NOTE,"initialize_MOM_generic_tracer: "//&
+                            "skip initialization of generic tracer "//trim(g_tracer_name))
         endif
 
         call set_initialized(tr_ptr, g_tracer_name, CS%restart_CSp)
@@ -582,7 +577,8 @@ contains
       call generic_tracer_source(tv%T, tv%S, rho_dzt, dzt, dz_ml, G%isd, G%jsd, 1, dt, &
                G%areaT, get_diag_time_end(CS%diag), &
                optics%nbands, optics%max_wavelength_band, optics%sw_pen_band, optics%opacity_band, &
-               internal_heat=tv%internal_heat, frunoff=fluxes%frunoff, sosga=sosga)
+               internal_heat=tv%internal_heat, frunoff=fluxes%frunoff, sosga=sosga, &
+               geolat=G%geolatT, eqn_of_state=tv%eqn_of_state)
     else
       call generic_tracer_source(US%C_to_degC*tv%T, US%S_to_ppt*tv%S, rho_dzt, dzt, dz_ml, G%isd, G%jsd, 1, dt, &
                G%US%L_to_m**2*G%areaT(:,:), get_diag_time_end(CS%diag), &
@@ -590,7 +586,8 @@ contains
                sw_pen_band=G%US%QRZ_T_to_W_m2*optics%sw_pen_band(:,:,:), &
                opacity_band=G%US%m_to_Z*optics%opacity_band(:,:,:,:), &
                internal_heat=G%US%RZ_to_kg_m2*US%C_to_degC*tv%internal_heat(:,:), &
-               frunoff=G%US%RZ_T_to_kg_m2s*fluxes%frunoff(:,:), sosga=sosga)
+               frunoff=G%US%RZ_T_to_kg_m2s*fluxes%frunoff(:,:), sosga=sosga, &
+               geolat=G%geolatT, eqn_of_state=tv%eqn_of_state)
     endif
 
     ! This uses applyTracerBoundaryFluxesInOut to handle the change in tracer due to freshwater fluxes
