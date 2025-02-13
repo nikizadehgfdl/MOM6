@@ -360,6 +360,7 @@ type, public :: MOM_control_struct ; private
                                 !! higher values use more appropriate expressions that differ at
                                 !! roundoff for non-Boussinesq cases.
   logical :: use_particles      !< Turns on the particles package
+  logical :: use_uh_particles   !< particles are advected by uh/h
   logical :: use_dbclient       !< Turns on the database client used for ML inference/analysis
   character(len=10) :: particle_type !< Particle types include: surface(default), profiling and sail drone.
 
@@ -1242,6 +1243,18 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
 
   endif ! -------------------------------------------------- end SPLIT
 
+  if (CS%use_particles .and. CS%do_dynamics .and. (.not. CS%use_uh_particles)) then
+    if (CS%thickness_diffuse_first) call MOM_error(WARNING,"particles_run: "//&
+      "Thickness_diffuse_first is true and use_uh_particles is false. "//&
+      "This is usually a bad combination.")
+    !Run particles using unweighted velocity
+    call particles_run(CS%particles, Time_local, CS%u, CS%v, CS%h, &
+                       CS%tv, dt, CS%use_uh_particles)
+    call particles_to_z_space(CS%particles, h)
+  endif
+
+
+
   ! Update the model's current to reflect wind-wave growth
   if (Waves%Stokes_DDT .and. (.not.Waves%Passive_Stokes_DDT)) then
     do J=jsq,jeq ; do i=is,ie
@@ -1264,10 +1277,6 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     do j=js,je ; do I=isq,ieq
       Waves%us_x_from_ddt(I,j,:) = Waves%us_x_from_ddt(I,j,:) + Waves%ddt_us_x(I,j,:)*dt
     enddo; enddo
-  endif
-
-  if (CS%use_particles .and. CS%do_dynamics) then ! Run particles whether or not stepping is split
-    call particles_run(CS%particles, Time_local, CS%u, CS%v, CS%h, CS%tv) ! Run the particles model
   endif
 
 
@@ -1333,10 +1342,19 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
 
   ! Advance the dynamics time by dt.
   CS%t_dyn_rel_adv = CS%t_dyn_rel_adv + dt
+
+  if (CS%use_particles .and. CS%do_dynamics .and. CS%use_uh_particles) then
+    !Run particles using thickness-weighted velocity
+    call particles_run(CS%particles, Time_local, CS%uhtr, CS%vhtr, CS%h, &
+        CS%tv, CS%t_dyn_rel_adv, CS%use_uh_particles)
+  endif
+
   CS%n_dyn_steps_in_adv = CS%n_dyn_steps_in_adv + 1
   if (CS%alternate_first_direction) then
     call set_first_direction(G, MODULO(G%first_direction+1,2))
     CS%first_dir_restart = real(G%first_direction)
+  elseif (CS%use_particles .and. CS%do_dynamics .and. (.not.CS%use_uh_particles)) then
+    call particles_to_k_space(CS%particles, h)
   endif
   CS%t_dyn_rel_thermo = CS%t_dyn_rel_thermo + dt
   if (abs(CS%t_dyn_rel_thermo) < 1e-6*dt) CS%t_dyn_rel_thermo = 0.0
@@ -2438,7 +2456,8 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
 
   call get_param(param_file, "MOM", "USE_PARTICLES", CS%use_particles, &
                  "If true, use the particles package.", default=.false.)
-
+  call get_param(param_file, "MOM", "USE_UH_PARTICLES", CS%use_uh_particles, &
+                 "If true, use the uh velocity in the particles package.",default=.false.)
   CS%ensemble_ocean=.false.
   call get_param(param_file, "MOM", "ENSEMBLE_OCEAN", CS%ensemble_ocean, &
                  "If False, The model is being run in serial mode as a single realization. "//&
@@ -4010,8 +4029,7 @@ subroutine save_MOM_restart(CS, directory, time, G, time_stamped, filename, &
       time_stamped=time_stamped, filename=filename, GV=GV, &
       num_rest_files=num_rest_files, write_IC=write_IC)
 
-  ! TODO: Update particles to use Time and directories
-  if (CS%use_particles) call particles_save_restart(CS%particles, CS%h)
+!  if (CS%use_particles) call particles_save_restart(CS%particles, CS%h, directory, time, time_stamped)
 end subroutine save_MOM_restart
 
 
@@ -4054,7 +4072,7 @@ subroutine MOM_end(CS)
 
   if (CS%use_particles) then
     call particles_end(CS%particles, CS%h)
-    deallocate(CS%particles)
+  !  deallocate(CS%particles)
   endif
 
   call thickness_diffuse_end(CS%thickness_diffuse_CSp, CS%CDp)
