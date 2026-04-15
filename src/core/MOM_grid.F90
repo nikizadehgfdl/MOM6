@@ -13,6 +13,7 @@ use MOM_unit_scaling, only : unit_scale_type
 implicit none ; private
 
 #include <MOM_memory.h>
+#define MAX_DSAMP_LEV 3
 
 public MOM_grid_init, MOM_grid_end, set_derived_metrics, set_first_direction
 public isPointInCell, hor_index_type, get_global_grid_size
@@ -27,7 +28,7 @@ type, public :: ocean_grid_type
   type(MOM_domain_type), pointer :: Domain => NULL() !< Ocean model domain
   type(MOM_domain_type), pointer :: Domain_aux => NULL() !< A non-symmetric auxiliary domain type.
   type(hor_index_type) :: HI !< Horizontal index ranges
-  type(hor_index_type) :: HId2 !< Horizontal index ranges for level-2-downsampling
+  type(hor_index_type) :: HId(2:MAX_DSAMP_LEV) !< Horizontal index ranges for downsampling, level 2 to MAX_DSAMP_LEV.
 
   integer :: isc !< The start i-index of cell centers within the computational domain
   integer :: iec !< The end i-index of cell centers within the computational domain
@@ -235,7 +236,7 @@ subroutine MOM_grid_init(G, param_file, US, HI, global_indexing, bathymetry_at_v
   integer :: isd, ied, jsd, jed
   integer :: IsdB, IedB, JsdB, JedB
   integer :: ied_max, jed_max
-  integer :: niblock, njblock, nihalo, njhalo, nblocks, n, i, j
+  integer :: niblock, njblock, nihalo, njhalo, nblocks, n, i, j, dl
   logical :: local_indexing  ! If false use global index values instead of having
                              ! the data domain on each processor start at 1.
   ! This include declares and sets the variable "version".
@@ -400,22 +401,25 @@ subroutine MOM_grid_init(G, param_file, US, HI, global_indexing, bathymetry_at_v
   if ( G%block(nblocks)%jed+G%block(nblocks)%jdg_offset > G%HI%jed + G%HI%jdg_offset ) &
         call MOM_error(FATAL, "MOM_grid_init: G%jed_bk > G%jed")
 
-  call get_domain_extent(G%Domain, G%HId2%isc, G%HId2%iec, G%HId2%jsc, G%HId2%jec, &
-                         G%HId2%isd, G%HId2%ied, G%HId2%jsd, G%HId2%jed, &
-                         G%HId2%isg, G%HId2%ieg, G%HId2%jsg, G%HId2%jeg, coarsen=2)
+  ! Initialize the global grid extents for all levels of diagnosics coarsening.
+  do dl=2,MAX_DSAMP_LEV
+    call get_domain_extent(G%Domain, G%HId(dl)%isc, G%HId(dl)%iec, G%HId(dl)%jsc, G%HId(dl)%jec, &
+                          G%HId(dl)%isd, G%HId(dl)%ied, G%HId(dl)%jsd, G%HId(dl)%jed, &
+                          G%HId(dl)%isg, G%HId(dl)%ieg, G%HId(dl)%jsg, G%HId(dl)%jeg, coarsen=dl)
 
-  ! Set array sizes for fields that are discretized at tracer cell boundaries.
-  G%HId2%IscB = G%HId2%isc ; G%HId2%JscB = G%HId2%jsc
-  G%HId2%IsdB = G%HId2%isd ; G%HId2%JsdB = G%HId2%jsd
-  G%HId2%IsgB = G%HId2%isg ; G%HId2%JsgB = G%HId2%jsg
-  if (G%symmetric) then
-    G%HId2%IscB = G%HId2%isc-1 ; G%HId2%JscB = G%HId2%jsc-1
-    G%HId2%IsdB = G%HId2%isd-1 ; G%HId2%JsdB = G%HId2%jsd-1
-    G%HId2%IsgB = G%HId2%isg-1 ; G%HId2%JsgB = G%HId2%jsg-1
-  endif
-  G%HId2%IecB = G%HId2%iec ; G%HId2%JecB = G%HId2%jec
-  G%HId2%IedB = G%HId2%ied ; G%HId2%JedB = G%HId2%jed
-  G%HId2%IegB = G%HId2%ieg ; G%HId2%JegB = G%HId2%jeg
+    ! Set array sizes for fields that are discretized at tracer cell boundaries.
+    G%HId(dl)%IscB = G%HId(dl)%isc ; G%HId(dl)%JscB = G%HId(dl)%jsc
+    G%HId(dl)%IsdB = G%HId(dl)%isd ; G%HId(dl)%JsdB = G%HId(dl)%jsd
+    G%HId(dl)%IsgB = G%HId(dl)%isg ; G%HId(dl)%JsgB = G%HId(dl)%jsg
+    if (G%symmetric) then
+      G%HId(dl)%IscB = G%HId(dl)%isc-1 ; G%HId(dl)%JscB = G%HId(dl)%jsc-1
+      G%HId(dl)%IsdB = G%HId(dl)%isd-1 ; G%HId(dl)%JsdB = G%HId(dl)%jsd-1
+      G%HId(dl)%IsgB = G%HId(dl)%isg-1 ; G%HId(dl)%JsgB = G%HId(dl)%jsg-1
+    endif
+    G%HId(dl)%IecB = G%HId(dl)%iec ; G%HId(dl)%JecB = G%HId(dl)%jec
+    G%HId(dl)%IedB = G%HId(dl)%ied ; G%HId(dl)%JedB = G%HId(dl)%jed
+    G%HId(dl)%IegB = G%HId(dl)%ieg ; G%HId(dl)%JegB = G%HId(dl)%jeg
+  enddo
 
 end subroutine MOM_grid_init
 
