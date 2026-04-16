@@ -4139,8 +4139,8 @@ end subroutine downsample_diag_masks_set
 !> Get the diagnostics-compute indices (to be passed to send_data) based on the shape of
 !! the diag field (the same way they are deduced for non-downsampled fields)
 subroutine downsample_diag_indices_get(fo1, fo2, dl, diag_cs, isv, iev, jsv, jev)
-  integer,           intent(in)  :: fo1     !< The size of the diag field in x
-  integer,           intent(in)  :: fo2     !< The size of the diag field in y
+  integer,           intent(in)  :: fo1     !< The size of the original diag field in x on data domain including halos
+  integer,           intent(in)  :: fo2     !< The size of the original diag field in y on data domain including halos
   integer,           intent(in)  :: dl      !< Integer downsample level
   type(diag_ctrl),   intent(in)  :: diag_CS !< Structure used to regulate diagnostic output
   integer,           intent(out) :: isv     !< i-start index for diagnostics
@@ -4168,48 +4168,42 @@ subroutine downsample_diag_indices_get(fo1, fo2, dl, diag_cs, isv, iev, jsv, jev
     first_check = .false.
   endif
 
-  cszi = diag_cs%dsamp(dl)%iec-diag_cs%dsamp(dl)%isc +1 ; dszi = diag_cs%dsamp(dl)%ied-diag_cs%dsamp(dl)%isd +1
-  cszj = diag_cs%dsamp(dl)%jec-diag_cs%dsamp(dl)%jsc +1 ; dszj = diag_cs%dsamp(dl)%jed-diag_cs%dsamp(dl)%jsd +1
-  isv = diag_cs%dsamp(dl)%isc ; iev = diag_cs%dsamp(dl)%iec
-  jsv = diag_cs%dsamp(dl)%jsc ; jev = diag_cs%dsamp(dl)%jec
-  f1 = fo1/dl
-  f2 = fo2/dl
-  !Correction for the symmetric case
-  if (diag_cs%G%symmetric) then
-    f1 = f1 + mod(fo1,dl)
-    f2 = f2 + mod(fo2,dl)
-  endif
-  if ( f1 == dszi ) then
+  !The diagnostics field is defined on the original (non-downsampled) data domain.
+  !The size of the original diag field in each direction is used to deduce the indices to be used for downsampled domain.
+  !The sizes of the original compute and data domains
+  cszi = diag_cs%ie-diag_cs%is +1 ; dszi = diag_cs%ied-diag_cs%isd +1
+  cszj = diag_cs%je-diag_cs%js +1 ; dszj = diag_cs%jed-diag_cs%jsd +1
+
+  if ( fo1 == dszi ) then
     isv = diag_cs%dsamp(dl)%isc ; iev = diag_cs%dsamp(dl)%iec   ! field on Data domain, take compute domain indcies
-  !The rest is not taken with the full MOM6 diag_table
-  elseif ( f1 == dszi + 1 ) then
+  elseif ( fo1 == dszi + 1 ) then
     isv = diag_cs%dsamp(dl)%isc ; iev = diag_cs%dsamp(dl)%iec+1   ! Symmetric data domain
-  elseif ( f1 == cszi) then
+  elseif ( fo1 == cszi) then
     isv = 1 ; iev = (diag_cs%dsamp(dl)%iec-diag_cs%dsamp(dl)%isc) +1  ! Computational domain
-  elseif ( f1 == cszi + 1 ) then
+  elseif ( fo1 == cszi + 1 ) then
     isv = 1 ; iev = (diag_cs%dsamp(dl)%iec-diag_cs%dsamp(dl)%isc) +2  ! Symmetric computational domain
   else
-    write (mesg,*) " peculiar size ",f1," in i-direction\n"//&
+    write (mesg,*) " dl =",dl," fo1 =",fo1," peculiar size for diag field in i-direction\n"//&
           "does not match one of ", cszi, cszi+1, dszi, dszi+1
     call MOM_error(FATAL,"downsample_diag_indices_get: "//trim(mesg))
   endif
-  if ( f2 == dszj ) then
+  if ( fo2 == dszj ) then
     jsv = diag_cs%dsamp(dl)%jsc ; jev = diag_cs%dsamp(dl)%jec     ! Data domain
-  elseif ( f2 == dszj + 1 ) then
+  elseif ( fo2 == dszj + 1 ) then
     jsv = diag_cs%dsamp(dl)%jsc ; jev = diag_cs%dsamp(dl)%jec+1   ! Symmetric data domain
-  elseif ( f2 == cszj) then
+  elseif ( fo2 == cszj) then
     jsv = 1 ; jev = (diag_cs%dsamp(dl)%jec-diag_cs%dsamp(dl)%jsc) +1  ! Computational domain
-  elseif ( f2 == cszj + 1 ) then
+  elseif ( fo2 == cszj + 1 ) then
     jsv = 1 ; jev = (diag_cs%dsamp(dl)%jec-diag_cs%dsamp(dl)%jsc) +2  ! Symmetric computational domain
   else
-    write (mesg,*) " peculiar size ",f2," in j-direction\n"//&
+    write (mesg,*) " dl =",dl," fo2 =",fo2," peculiar size for diag field in j-direction\n"//&
           "does not match one of ", cszj, cszj+1, dszj, dszj+1
     call MOM_error(FATAL,"downsample_diag_indices_get: "//trim(mesg))
   endif
 end subroutine downsample_diag_indices_get
 
 !> This subroutine allocates and computes a downsampled array from an input array
-!! It also determines the diagnostics-compurte indices for the downsampled array
+!! It also determines the diagnostics-compute indices for the downsampled array
 !! 3d interface
 subroutine downsample_diag_field_3d(locfield, locfield_dsamp, dl, diag_cs, diag, isv, iev, jsv, jev, mask)
   real, dimension(:,:,:), pointer :: locfield  !< Input array pointer in arbitrary units [A ~> a]
@@ -4360,19 +4354,8 @@ subroutine downsample_field_3d(field_in, field_out, dl, method, mask, diag_cs, d
   eps_area = 1.0e-20 * diag_cs%G%US%m_to_L**2
   eps_vol = 1.0e-20 * diag_cs%G%US%m_to_L**2 * diag_cs%GV%m_to_H
 
-  ! Allocate the down sampled field on the down sampled data domain
-!  allocate(field_out(diag_cs%dsamp(dl)%isd:diag_cs%dsamp(dl)%ied,diag_cs%dsamp(dl)%jsd:diag_cs%dsamp(dl)%jed,ks:ke))
-!  allocate(field_out(1:size(field_in,1)/dl,1:size(field_in,2)/dl,ks:ke))
-  f_in1 = size(field_in,1)
-  f_in2 = size(field_in,2)
-  f1 = f_in1/dl
-  f2 = f_in2/dl
-  !Correction for the symmetric case
-  if (diag_cs%G%symmetric) then
-    f1 = f1 + mod(f_in1,dl)
-    f2 = f2 + mod(f_in2,dl)
-  endif
-  allocate(field_out(1:f1,1:f2,ks:ke))
+  ! Allocate the down sampled field on the down sampled compute domain
+  allocate(field_out(isv_d:iev_d,jsv_d:jev_d,ks:ke))
 
   ! Fill the down sampled field on the down sampled diagnostics (almost always compuate) domain
   !### The averaging used here is not rotationally invariant.
@@ -4515,20 +4498,8 @@ subroutine downsample_field_2d(field_in, field_out, dl, method, mask, diag_cs, d
   eps_len = 1.0e-20 * diag_cs%G%US%m_to_L
   eps_area = 1.0e-20 * diag_cs%G%US%m_to_L**2
 
-  ! Allocate the down sampled field on the down sampled data domain
-!  allocate(field_out(diag_cs%dsamp(dl)%isd:diag_cs%dsamp(dl)%ied,diag_cs%dsamp(dl)%jsd:diag_cs%dsamp(dl)%jed))
-!  allocate(field_out(1:size(field_in,1)/dl,1:size(field_in,2)/dl))
-  ! Fill the down sampled field on the down sampled diagnostics (almost always compuate) domain
-  f_in1 = size(field_in,1)
-  f_in2 = size(field_in,2)
-  f1 = f_in1/dl
-  f2 = f_in2/dl
-  ! Correction for the symmetric case
-  if (diag_cs%G%symmetric) then
-    f1 = f1 + mod(f_in1,dl)
-    f2 = f2 + mod(f_in2,dl)
-  endif
-  allocate(field_out(1:f1,1:f2))
+  ! Allocate the down sampled field on the down sampled compute domain
+  allocate(field_out(isv_d:iev_d,jsv_d:jev_d))
 
   if (method == MMP) then
     do j=jsv_d,jev_d ; do i=isv_d,iev_d
@@ -4537,7 +4508,6 @@ subroutine downsample_field_2d(field_in, field_out, dl, method, mask, diag_cs, d
       ave = 0.0
       total_weight = 0.0
       do jj=j0,j0+dl-1 ; do ii=i0,i0+dl-1
-!      do ii=i0,i0+dl-1 ; do jj=j0,j0+dl-1
         weight = mask(ii,jj)*diag_cs%G%areaT(ii,jj)
         total_weight = total_weight + weight
         ave = ave+field_in(ii,jj)*weight
@@ -4550,7 +4520,6 @@ subroutine downsample_field_2d(field_in, field_out, dl, method, mask, diag_cs, d
       j0 = jsv_o+dl*(j-jsv_d)
       ave = 0.0
       do jj=j0,j0+dl-1 ; do ii=i0,i0+dl-1
-!      do ii=i0,i0+dl-1 ; do jj=j0,j0+dl-1
         weight = mask(ii,jj)
         ave = ave+field_in(ii,jj)*weight
       enddo ; enddo

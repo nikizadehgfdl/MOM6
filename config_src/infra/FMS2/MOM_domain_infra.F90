@@ -1445,13 +1445,12 @@ subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, l
 
   call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain)
 
-  !For downsampled domain, recommend a halo of 1 (or 0?) since we're not doing wide-stencil computations.
-  !But that does not work because the downsampled field would not have the correct size to pass the checks, e.g., we get
-  !error: downsample_diag_indices_get: peculiar size 28 in i-direction\ndoes not match one of 24 25 26 27
-  ! call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d2, halo_size=(MOM_dom%nihalo/2), coarsen=2)
   do dl=2,MAX_DSAMP_LEV
-    call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d(dl), coarsen=dl)
+    !Downsample diagnostics calculations do not need halos. 
+    call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d(dl), coarsen=dl, halo_size=0, &
+                        domain_name="MOM_domain_d" // char(48+dl))
   enddo
+
 end subroutine create_MOM_domain
 
 !> dealloc_MOM_domain deallocates memory associated with a pointer to a MOM_domain_type
@@ -1709,7 +1708,9 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain
 
   call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain, xextent=exni, yextent=exnj)
   do dl=2,MAX_DSAMP_LEV
-    call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d(dl), domain_name=MOM_dom%name, coarsen=dl)
+    !Downsample diagnostics calculations do not need halos. 
+    call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d(dl), coarsen=dl, halo_size=0, &
+                        domain_name="MOM_domain_d" // char(48+dl))
   enddo
 
 end subroutine clone_MD_to_MD
