@@ -10,6 +10,8 @@
 !! those APIs would be applied here).
 module MOM_diag_manager_infra
 
+#define MAX_DSAMP_LEV 3
+
 use, intrinsic :: iso_fortran_env, only : real64
 use diag_axis_mod,    only : fms_axis_init=>diag_axis_init
 use diag_axis_mod,    only : fms_get_diag_axis_name => get_diag_axis_name
@@ -116,10 +118,10 @@ integer function MOM_diag_axis_init(name, data, units, cart_name, long_name, MOM
       MOM_diag_axis_init = fms_axis_init(name, data, units, cart_name, long_name=long_name, &
               direction=direction, set_name=set_name, edges=edges, &
               domain2=MOM_domain%mpp_domain, domain_position=position)
-    elseif (coarsening == 2) then
+    elseif (coarsening <= MAX_DSAMP_LEV) then
       MOM_diag_axis_init = fms_axis_init(name, data, units, cart_name, long_name=long_name, &
               direction=direction, set_name=set_name, edges=edges, &
-              domain2=MOM_domain%mpp_domain_d2, domain_position=position)
+              domain2=MOM_domain%mpp_domain_d(coarsening), domain_position=position)
     else
       call MOM_error(FATAL, "diag_axis_init called with an invalid value of coarsen.")
     endif
