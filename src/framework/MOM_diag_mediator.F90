@@ -1914,7 +1914,7 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
     endif
   endif
 
-  if (diag%fms_xyave_diag_id>0) then
+  if (diag%fms_xyave_diag_id>0 .and. dl<2) then
     call post_xy_average(diag_cs, diag, locfield)
   endif
 
