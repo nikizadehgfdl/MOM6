@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Describes the decomposed MOM domain and has routines for communications across PEs
 module MOM_domain_infra
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_coms_infra,  only : PE_here, root_PE, num_PEs
 use MOM_cpu_clock_infra, only : cpu_clock_begin, cpu_clock_end
@@ -32,6 +34,7 @@ use fms_affinity_mod, only : fms_affinity_init, fms_affinity_set, fms_affinity_g
 
 ! The `group_pass_type` fields are never accessed, so we keep it as an FMS type
 use mpp_domains_mod, only : group_pass_type => mpp_group_update_type
+#define MAX_DSAMP_LEV 4
 
 implicit none ; private
 
@@ -131,7 +134,7 @@ type, public :: MOM_domain_type
   character(len=64) :: name     !< The name of this domain
   type(domain2D), pointer :: mpp_domain => NULL() !< The FMS domain with halos
                                 !! on this processor, centered at h points.
-  type(domain2D), pointer :: mpp_domain_d2 => NULL() !< A coarse FMS domain with halos
+  type(domain2D), pointer :: mpp_domain_d(:) => NULL() !< A coarse FMS domain with halos
                                 !! on this processor, centered at h points.
   integer :: niglobal           !< The total horizontal i-domain size.
   integer :: njglobal           !< The total horizontal j-domain size.
@@ -1212,7 +1215,7 @@ subroutine redistribute_array_2d(Domain1, array1, Domain2, array2, complete)
   ! Local variables
   logical :: do_complete
 
-  do_complete=.true.;if (PRESENT(complete)) do_complete = complete
+  do_complete=.true. ; if (PRESENT(complete)) do_complete = complete
 
   call mpp_redistribute(Domain1, array1, Domain2, array2, do_complete)
 
@@ -1231,7 +1234,7 @@ subroutine redistribute_array_3d(Domain1, array1, Domain2, array2, complete)
   ! Local variables
   logical :: do_complete
 
-  do_complete=.true.;if (PRESENT(complete)) do_complete = complete
+  do_complete=.true. ; if (PRESENT(complete)) do_complete = complete
 
   call mpp_redistribute(Domain1, array1, Domain2, array2, do_complete)
 
@@ -1250,7 +1253,7 @@ subroutine redistribute_array_4d(Domain1, array1, Domain2, array2, complete)
   ! Local variables
   logical :: do_complete
 
-  do_complete=.true.;if (PRESENT(complete)) do_complete = complete
+  do_complete=.true. ; if (PRESENT(complete)) do_complete = complete
 
   call mpp_redistribute(Domain1, array1, Domain2, array2, do_complete)
 
@@ -1258,53 +1261,89 @@ end subroutine redistribute_array_4d
 
 
 !> Rescale the values of a 4-D array in its computational domain by a constant factor
-subroutine rescale_comp_data_4d(domain, array, scale)
+subroutine rescale_comp_data_4d(domain, array, scale, zero_zeros)
   type(MOM_domain_type),    intent(in)    :: domain !< MOM domain from which to extract information
   real, dimension(:,:,:,:), intent(inout) :: array  !< The array which is having the data in its
                                                     !! computational domain rescaled
   real,                     intent(in)    :: scale  !< A scaling factor by which to multiply the
                                                     !! values in the computational domain of array
-  integer :: is, ie, js, je
+  logical,        optional, intent(in)    :: zero_zeros !< If present and true, convert negative zeros
+                                                    !! into ordinary signless zeros.
+  logical :: unsign_zeros ! If true, convert negative zeros into ordinary signless zeros.
+  integer :: is, ie, js, je, i, j, k, m
 
-  if (scale == 1.0) return
+  unsign_zeros = .false. ; if (present(zero_zeros)) unsign_zeros = zero_zeros
+
+  if ((scale == 1.0) .and. (.not.unsign_zeros)) return
 
   call get_simple_array_i_ind(domain, size(array,1), is, ie)
   call get_simple_array_j_ind(domain, size(array,2), js, je)
-  array(is:ie,js:je,:,:) = scale*array(is:ie,js:je,:,:)
+  if (scale /= 1.0) &
+    array(is:ie,js:je,:,:) = scale*array(is:ie,js:je,:,:)
+
+  if (unsign_zeros) then ! Convert negative zeros into zeros
+    do m=1,size(array,4) ; do k=1,size(array,3) ; do j=js,je ; do i=is,ie
+      if (array(i,j,k,m) == 0.0) array(i,j,k,m) = 0.0
+    enddo ; enddo ; enddo ; enddo
+  endif
 
 end subroutine rescale_comp_data_4d
 
 !> Rescale the values of a 3-D array in its computational domain by a constant factor
-subroutine rescale_comp_data_3d(domain, array, scale)
+subroutine rescale_comp_data_3d(domain, array, scale, zero_zeros)
   type(MOM_domain_type),  intent(in)    :: domain !< MOM domain from which to extract information
   real, dimension(:,:,:), intent(inout) :: array  !< The array which is having the data in its
                                                   !! computational domain rescaled
   real,                   intent(in)    :: scale  !< A scaling factor by which to multiply the
                                                   !! values in the computational domain of array
-  integer :: is, ie, js, je
+  logical,      optional, intent(in)    :: zero_zeros !< If present and true, convert negative zeros
+                                                  !! into ordinary signless zeros.
+  logical :: unsign_zeros ! If true, convert negative zeros into ordinary signless zeros.
+  integer :: is, ie, js, je, i, j, k
 
-  if (scale == 1.0) return
+  unsign_zeros = .false. ; if (present(zero_zeros)) unsign_zeros = zero_zeros
+
+  if ((scale == 1.0) .and. (.not.unsign_zeros)) return
 
   call get_simple_array_i_ind(domain, size(array,1), is, ie)
   call get_simple_array_j_ind(domain, size(array,2), js, je)
-  array(is:ie,js:je,:) = scale*array(is:ie,js:je,:)
+  if (scale /= 1.0) &
+    array(is:ie,js:je,:) = scale*array(is:ie,js:je,:)
+
+  if (unsign_zeros) then ! Convert negative zeros into zeros
+    do k=1,size(array,3) ; do j=js,je ; do i=is,ie
+      if (array(i,j,k) == 0.0) array(i,j,k) = 0.0
+    enddo ; enddo ; enddo
+  endif
 
 end subroutine rescale_comp_data_3d
 
 !> Rescale the values of a 2-D array in its computational domain by a constant factor
-subroutine rescale_comp_data_2d(domain, array, scale)
+subroutine rescale_comp_data_2d(domain, array, scale, zero_zeros)
   type(MOM_domain_type), intent(in)    :: domain !< MOM domain from which to extract information
   real, dimension(:,:),  intent(inout) :: array  !< The array which is having the data in its
                                                  !! computational domain rescaled
   real,                  intent(in)    :: scale  !< A scaling factor by which to multiply the
                                                  !! values in the computational domain of array
-  integer :: is, ie, js, je
+  logical,      optional, intent(in)   :: zero_zeros !< If present and true, convert negative zeros
+                                                  !! into ordinary signless zeros.
+  logical :: unsign_zeros ! If true, convert negative zeros into ordinary signless zeros.
+  integer :: is, ie, js, je, i, j
 
-  if (scale == 1.0) return
+  unsign_zeros = .false. ; if (present(zero_zeros)) unsign_zeros = zero_zeros
+
+  if ((scale == 1.0) .and. (.not.unsign_zeros)) return
 
   call get_simple_array_i_ind(domain, size(array,1), is, ie)
   call get_simple_array_j_ind(domain, size(array,2), js, je)
-  array(is:ie,js:je) = scale*array(is:ie,js:je)
+  if (scale /= 1.0) &
+    array(is:ie,js:je) = scale*array(is:ie,js:je)
+
+  if (unsign_zeros) then ! Convert negative zeros into zeros
+    do j=js,je ; do i=is,ie
+      if (array(i,j) == 0.0) array(i,j) = 0.0
+    enddo ; enddo
+  endif
 
 end subroutine rescale_comp_data_2d
 
@@ -1333,14 +1372,14 @@ subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, l
   integer, dimension(4) :: global_indices ! The lower and upper global i- and j-index bounds
   integer :: X_FLAGS  ! A combination of integers encoding the x-direction grid connectivity.
   integer :: Y_FLAGS  ! A combination of integers encoding the y-direction grid connectivity.
-  integer :: xhalo_d2, yhalo_d2
+  integer :: dl
   character(len=200) :: mesg    ! A string for use in error messages
   logical :: mask_table_exists  ! Mask_table is present and the file it points to exists
 
   if (.not.associated(MOM_dom)) then
     allocate(MOM_dom)
     allocate(MOM_dom%mpp_domain)
-    allocate(MOM_dom%mpp_domain_d2)
+    do dl=2,MAX_DSAMP_LEV ; allocate(MOM_dom%mpp_domain_d(dl)) ; enddo
   endif
 
   MOM_dom%name = "MOM" ; if (present(domain_name)) MOM_dom%name = trim(domain_name)
@@ -1354,8 +1393,10 @@ subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, l
       "TRIPOLAR_N and REENTRANT_Y may not be used together.")
   endif
 
-  MOM_dom%nonblocking_updates = nonblocking
-  MOM_dom%thin_halo_updates = thin_halos
+  MOM_dom%nonblocking_updates = .false.
+  if (present(nonblocking)) MOM_dom%nonblocking_updates = nonblocking
+  MOM_dom%thin_halo_updates = .false.
+  if (present(thin_halos)) MOM_dom%thin_halo_updates = thin_halos
   MOM_dom%symmetric = .true. ; if (present(symmetric)) MOM_dom%symmetric = symmetric
   MOM_dom%niglobal = n_global(1) ; MOM_dom%njglobal = n_global(2)
   MOM_dom%nihalo = n_halo(1) ; MOM_dom%njhalo = n_halo(2)
@@ -1406,11 +1447,12 @@ subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, l
 
   call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain)
 
-  !For downsampled domain, recommend a halo of 1 (or 0?) since we're not doing wide-stencil computations.
-  !But that does not work because the downsampled field would not have the correct size to pass the checks, e.g., we get
-  !error: downsample_diag_indices_get: peculiar size 28 in i-direction\ndoes not match one of 24 25 26 27
-  ! call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d2, halo_size=(MOM_dom%nihalo/2), coarsen=2)
-  call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d2, coarsen=2)
+  do dl=2,MAX_DSAMP_LEV
+    !Downsample diagnostics calculations do not need halos. 
+    call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d(dl), coarsen=dl, halo_size=0, &
+                        domain_name="MOM_domain_d" // char(48+dl))
+  enddo
+
 end subroutine create_MOM_domain
 
 !> dealloc_MOM_domain deallocates memory associated with a pointer to a MOM_domain_type
@@ -1420,6 +1462,7 @@ subroutine deallocate_MOM_domain(MOM_domain, cursory)
   logical,  optional, intent(in) :: cursory    !< If true do not deallocate fields associated
                                                !! with the underlying infrastructure
   logical :: invasive  ! If true, deallocate fields associated with the underlying infrastructure
+  integer :: dl
 
   invasive = .true. ; if (present(cursory)) invasive = .not.cursory
 
@@ -1428,9 +1471,11 @@ subroutine deallocate_MOM_domain(MOM_domain, cursory)
       if (invasive) call mpp_deallocate_domain(MOM_domain%mpp_domain)
       deallocate(MOM_domain%mpp_domain)
     endif
-    if (associated(MOM_domain%mpp_domain_d2)) then
-      if (invasive) call mpp_deallocate_domain(MOM_domain%mpp_domain_d2)
-      deallocate(MOM_domain%mpp_domain_d2)
+    if (associated(MOM_domain%mpp_domain_d)) then
+      if (invasive) then
+        do dl=2,MAX_DSAMP_LEV ; call mpp_deallocate_domain(MOM_domain%mpp_domain_d(dl)); enddo
+      endif
+      deallocate(MOM_domain%mpp_domain_d)
     endif
     if (associated(MOM_domain%maskmap)) deallocate(MOM_domain%maskmap)
     deallocate(MOM_domain)
@@ -1527,7 +1572,7 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain
   integer, dimension(:), allocatable :: exnj ! The extents of the grid for each j-row of the layout.
                                              ! The sum of exni must equal MOM_dom%niglobal.
   integer :: qturns ! The number of quarter turns, restricted to the range of 0 to 3.
-  integer :: i, j, nl1, nl2
+  integer :: i, j, nl1, nl2, dl
   integer :: io_layout_in(2)
 
   qturns = 0
@@ -1542,7 +1587,7 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain
   if (.not.associated(MOM_dom)) then
     allocate(MOM_dom)
     allocate(MOM_dom%mpp_domain)
-    allocate(MOM_dom%mpp_domain_d2)
+    do dl=2,MAX_DSAMP_LEV ; allocate(MOM_dom%mpp_domain_d(dl)) ; enddo
   endif
 
 ! Save the extra data for creating other domains of different resolution that overlay this domain
@@ -1664,7 +1709,11 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain
   endif
 
   call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain, xextent=exni, yextent=exnj)
-  call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d2, domain_name=MOM_dom%name, coarsen=2)
+  do dl=2,MAX_DSAMP_LEV
+    !Downsample diagnostics calculations do not need halos. 
+    call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d(dl), coarsen=dl, halo_size=0, &
+                        domain_name="MOM_domain_d" // char(48+dl))
+  enddo
 
 end subroutine clone_MD_to_MD
 
@@ -1802,12 +1851,12 @@ subroutine get_domain_extent_MD(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed, 
     call mpp_get_compute_domain(Domain%mpp_domain, isc, iec, jsc, jec)
     call mpp_get_data_domain(Domain%mpp_domain, isd, ied, jsd, jed)
     call mpp_get_global_domain(Domain%mpp_domain, isg_, ieg_, jsg_, jeg_)
-  elseif (coarsen_lev == 2) then
-    if (.not.associated(Domain%mpp_domain_d2)) call MOM_error(FATAL, &
-            "get_domain_extent called with coarsen=2, but Domain%mpp_domain_d2 is not associated.")
-    call mpp_get_compute_domain(Domain%mpp_domain_d2, isc, iec, jsc, jec)
-    call mpp_get_data_domain(Domain%mpp_domain_d2, isd, ied, jsd, jed)
-    call mpp_get_global_domain(Domain%mpp_domain_d2, isg_, ieg_, jsg_, jeg_)
+  elseif (coarsen_lev <= MAX_DSAMP_LEV) then
+    if (.not.associated(Domain%mpp_domain_d)) call MOM_error(FATAL, &
+            "get_domain_extent called with coarsen_lev, but Domain%mpp_domain_d(coarsen_lev) is not associated.")
+    call mpp_get_compute_domain(Domain%mpp_domain_d(coarsen_lev), isc, iec, jsc, jec)
+    call mpp_get_data_domain(Domain%mpp_domain_d(coarsen_lev), isd, ied, jsd, jed)
+    call mpp_get_global_domain(Domain%mpp_domain_d(coarsen_lev), isg_, ieg_, jsg_, jeg_)
   else
     call MOM_error(FATAL, "get_domain_extent called with an unsupported level of coarsening.")
   endif

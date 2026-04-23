@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Provides the ocean grid type
 module MOM_grid
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_hor_index, only : hor_index_type, hor_index_init
 use MOM_domains, only : MOM_domain_type, get_domain_extent, compute_block_extent
@@ -13,6 +15,7 @@ use MOM_unit_scaling, only : unit_scale_type
 implicit none ; private
 
 #include <MOM_memory.h>
+#define MAX_DSAMP_LEV 4
 
 public MOM_grid_init, MOM_grid_end, set_derived_metrics, set_first_direction
 public isPointInCell, hor_index_type, get_global_grid_size
@@ -27,7 +30,7 @@ type, public :: ocean_grid_type
   type(MOM_domain_type), pointer :: Domain => NULL() !< Ocean model domain
   type(MOM_domain_type), pointer :: Domain_aux => NULL() !< A non-symmetric auxiliary domain type.
   type(hor_index_type) :: HI !< Horizontal index ranges
-  type(hor_index_type) :: HId2 !< Horizontal index ranges for level-2-downsampling
+  type(hor_index_type) :: HId(2:MAX_DSAMP_LEV) !< Horizontal index ranges for downsampling, level 2 to MAX_DSAMP_LEV.
 
   integer :: isc !< The start i-index of cell centers within the computational domain
   integer :: iec !< The end i-index of cell centers within the computational domain
@@ -75,8 +78,8 @@ type, public :: ocean_grid_type
 
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: &
     mask2dT, &   !< 0 for land points and 1 for ocean points on the h-grid [nondim].
-    geoLatT, &   !< The geographic latitude at q points [degrees_N] or [km] or [m].
-    geoLonT, &   !< The geographic longitude at q points [degrees_E] or [km] or [m].
+    geoLatT, &   !< The geographic latitude at tracer (h) points [degrees_N] or [km] or [m]
+    geoLonT, &   !< The geographic longitude at tracer (h) points [degrees_E] or [km] or [m]
     dxT, &       !< dxT is delta x at h points [L ~> m].
     IdxT, &      !< 1/dxT [L-1 ~> m-1].
     dyT, &       !< dyT is delta y at h points [L ~> m].
@@ -95,6 +98,7 @@ type, public :: ocean_grid_type
     geoLonCu, &  !< The geographic longitude at u points [degrees_E] or [km] or [m].
     dxCu, &      !< dxCu is delta x at u points [L ~> m].
     IdxCu, &     !< 1/dxCu [L-1 ~> m-1].
+    IdxCu_OBCmask, & !< 1/dxCu or 0 at boundary or OBC points [L-1 ~> m-1].
     dyCu, &      !< dyCu is delta y at u points [L ~> m].
     IdyCu, &     !< 1/dyCu [L-1 ~> m-1].
     dy_Cu, &     !< The unblocked lengths of the u-faces of the h-cell [L ~> m].
@@ -110,6 +114,7 @@ type, public :: ocean_grid_type
     IdxCv, &     !< 1/dxCv [L-1 ~> m-1].
     dyCv, &      !< dyCv is delta y at v points [L ~> m].
     IdyCv, &     !< 1/dyCv [L-1 ~> m-1].
+    IdyCv_OBCmask, & !< 1/dxCv or 0 at boundary or OBC points [L-1 ~> m-1].
     dx_Cv, &     !< The unblocked lengths of the v-faces of the h-cell [L ~> m].
     IareaCv, &   !< The masked inverse areas of v-grid cells [L-2 ~> m-2].
     areaCv       !< The areas of the v-grid cells [L2 ~> m2].
@@ -158,7 +163,16 @@ type, public :: ocean_grid_type
     y_ax_unit_short     !< A short description of the y-axis units for documenting parameter units
 
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: &
-    bathyT           !< Ocean bottom depth at tracer points, in depth units [Z ~> m].
+    bathyT           !< Ocean bottom depth, referenced to Z_ref at tracer points. bathyT is in
+                     !! depth units and positive *below* Z_ref [Z ~> m].
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: &
+    meanSL           !< Spatially varying time mean sea level, referenced to Z_ref at tracer points.
+                     !! meanSL is in height units and positive *above* Z_ref. It is used
+                     !! a) as the height where p = p_atm or zero;
+                     !! b) to calculate time mean thickness of the water column, where
+                     !!    mean thickness = max(meanSL + bathyT, 0.0).
+                     !! meanSL is 2D for the consideration of a domain with spatically varying mean
+                     !! height, e.g. the Great Lakes system [Z ~> m].
   real    :: Z_ref   !< A reference value for all geometric height fields, such as bathyT [Z ~> m].
 
   logical :: bathymetry_at_vel  !< If true, there are separate values for the
@@ -171,14 +185,15 @@ type, public :: ocean_grid_type
     Dblock_v, &   !< Topographic depths at v-points at which the flow is blocked [Z ~> m].
     Dopen_v       !< Topographic depths at v-points at which the flow is open at width dx_Cv [Z ~> m].
   real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEMB_PTR_) :: &
-    CoriolisBu    !< The Coriolis parameter at corner points [T-1 ~> s-1].
+    CoriolisBu, & !< The Coriolis parameter at corner points [T-1 ~> s-1].
+    Coriolis2Bu   !< The square of the Coriolis parameter at corner points [T-2 ~> s-2].
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: &
     df_dx, &      !< Derivative d/dx f (Coriolis parameter) at h-points [T-1 L-1 ~> s-1 m-1].
     df_dy         !< Derivative d/dy f (Coriolis parameter) at h-points [T-1 L-1 ~> s-1 m-1].
 
-  ! These variables are global sums that are useful for 1-d diagnostics and should not be rescaled.
-  real :: areaT_global  !< Global sum of h-cell area [m2]
-  real :: IareaT_global !< Global sum of inverse h-cell area (1/areaT_global) [m-2].
+  ! These variables are global sums that are useful for 1-d diagnostics.
+  real :: areaT_global  !< Global sum of h-cell area [L2 ~> m2]
+  real :: IareaT_global !< Global sum of inverse h-cell area (1/areaT_global) [L-2 ~> m-2].
 
   type(unit_scale_type), pointer :: US => NULL() !< A dimensional unit scaling type
 
@@ -189,11 +204,14 @@ type, public :: ocean_grid_type
 
   ! These parameters are run-time parameters that are used during some
   ! initialization routines (but not all)
+  real :: grid_unit_to_L !< A factor that converts a the geoLat and geoLon variables and related
+                        !! variables like len_lat and len_lon into rescaled horizontal distance
+                        !! units on a Cartesian grid, in [L km ~> 1000] or [L m-1 ~> 1] or
+                        !! is 0 for a non-Cartesian grid.
   real :: south_lat     !< The latitude (or y-coordinate) of the first v-line [degrees_N] or [km] or [m]
   real :: west_lon      !< The longitude (or x-coordinate) of the first u-line [degrees_E] or [km] or [m]
   real :: len_lat       !< The latitudinal (or y-coord) extent of physical domain [degrees_N] or [km] or [m]
   real :: len_lon       !< The longitudinal (or x-coord) extent of physical domain [degrees_E] or [km] or [m]
-  real :: Rad_Earth     !< The radius of the planet [m]
   real :: Rad_Earth_L   !< The radius of the planet in rescaled units [L ~> m]
   real :: max_depth     !< The maximum depth of the ocean in depth units [Z ~> m]
 end type ocean_grid_type
@@ -220,7 +238,7 @@ subroutine MOM_grid_init(G, param_file, US, HI, global_indexing, bathymetry_at_v
   integer :: isd, ied, jsd, jed
   integer :: IsdB, IedB, JsdB, JedB
   integer :: ied_max, jed_max
-  integer :: niblock, njblock, nihalo, njhalo, nblocks, n, i, j
+  integer :: niblock, njblock, nihalo, njhalo, nblocks, n, i, j, dl
   logical :: local_indexing  ! If false use global index values instead of having
                              ! the data domain on each processor start at 1.
   ! This include declares and sets the variable "version".
@@ -348,16 +366,16 @@ subroutine MOM_grid_init(G, param_file, US, HI, global_indexing, bathymetry_at_v
     G%Block(n)%jec = G%Block(n)%jsc + jend(j) - jbegin(j)
     G%Block(n)%ied = G%Block(n)%iec + nihalo
     G%Block(n)%jed = G%Block(n)%jec + njhalo
-    G%Block(n)%IscB = G%Block(n)%isc; G%Block(n)%IecB = G%Block(n)%iec
-    G%Block(n)%JscB = G%Block(n)%jsc; G%Block(n)%JecB = G%Block(n)%jec
+    G%Block(n)%IscB = G%Block(n)%isc ; G%Block(n)%IecB = G%Block(n)%iec
+    G%Block(n)%JscB = G%Block(n)%jsc ; G%Block(n)%JecB = G%Block(n)%jec
     !   For symmetric memory domains, the first block will have the extra point
     ! at the lower boundary of its computational domain.
     if (G%symmetric) then
       if (i==1) G%Block(n)%IscB = G%Block(n)%IscB-1
       if (j==1) G%Block(n)%JscB = G%Block(n)%JscB-1
     endif
-    G%Block(n)%IsdB = G%Block(n)%isd; G%Block(n)%IedB = G%Block(n)%ied
-    G%Block(n)%JsdB = G%Block(n)%jsd; G%Block(n)%JedB = G%Block(n)%jed
+    G%Block(n)%IsdB = G%Block(n)%isd ; G%Block(n)%IedB = G%Block(n)%ied
+    G%Block(n)%JsdB = G%Block(n)%jsd ; G%Block(n)%JedB = G%Block(n)%jed
     !--- For symmetric memory domain, every block will have an extra point
     !--- at the lower boundary of its data domain.
     if (G%symmetric) then
@@ -385,22 +403,25 @@ subroutine MOM_grid_init(G, param_file, US, HI, global_indexing, bathymetry_at_v
   if ( G%block(nblocks)%jed+G%block(nblocks)%jdg_offset > G%HI%jed + G%HI%jdg_offset ) &
         call MOM_error(FATAL, "MOM_grid_init: G%jed_bk > G%jed")
 
-  call get_domain_extent(G%Domain, G%HId2%isc, G%HId2%iec, G%HId2%jsc, G%HId2%jec, &
-                         G%HId2%isd, G%HId2%ied, G%HId2%jsd, G%HId2%jed, &
-                         G%HId2%isg, G%HId2%ieg, G%HId2%jsg, G%HId2%jeg, coarsen=2)
+  ! Initialize the global grid extents for all levels of diagnosics coarsening.
+  do dl=2,MAX_DSAMP_LEV
+    call get_domain_extent(G%Domain, G%HId(dl)%isc, G%HId(dl)%iec, G%HId(dl)%jsc, G%HId(dl)%jec, &
+                          G%HId(dl)%isd, G%HId(dl)%ied, G%HId(dl)%jsd, G%HId(dl)%jed, &
+                          G%HId(dl)%isg, G%HId(dl)%ieg, G%HId(dl)%jsg, G%HId(dl)%jeg, coarsen=dl)
 
-  ! Set array sizes for fields that are discretized at tracer cell boundaries.
-  G%HId2%IscB = G%HId2%isc ; G%HId2%JscB = G%HId2%jsc
-  G%HId2%IsdB = G%HId2%isd ; G%HId2%JsdB = G%HId2%jsd
-  G%HId2%IsgB = G%HId2%isg ; G%HId2%JsgB = G%HId2%jsg
-  if (G%symmetric) then
-    G%HId2%IscB = G%HId2%isc-1 ; G%HId2%JscB = G%HId2%jsc-1
-    G%HId2%IsdB = G%HId2%isd-1 ; G%HId2%JsdB = G%HId2%jsd-1
-    G%HId2%IsgB = G%HId2%isg-1 ; G%HId2%JsgB = G%HId2%jsg-1
-  endif
-  G%HId2%IecB = G%HId2%iec ; G%HId2%JecB = G%HId2%jec
-  G%HId2%IedB = G%HId2%ied ; G%HId2%JedB = G%HId2%jed
-  G%HId2%IegB = G%HId2%ieg ; G%HId2%JegB = G%HId2%jeg
+    ! Set array sizes for fields that are discretized at tracer cell boundaries.
+    G%HId(dl)%IscB = G%HId(dl)%isc ; G%HId(dl)%JscB = G%HId(dl)%jsc
+    G%HId(dl)%IsdB = G%HId(dl)%isd ; G%HId(dl)%JsdB = G%HId(dl)%jsd
+    G%HId(dl)%IsgB = G%HId(dl)%isg ; G%HId(dl)%JsgB = G%HId(dl)%jsg
+    if (G%symmetric) then
+      G%HId(dl)%IscB = G%HId(dl)%isc-1 ; G%HId(dl)%JscB = G%HId(dl)%jsc-1
+      G%HId(dl)%IsdB = G%HId(dl)%isd-1 ; G%HId(dl)%JsdB = G%HId(dl)%jsd-1
+      G%HId(dl)%IsgB = G%HId(dl)%isg-1 ; G%HId(dl)%JsgB = G%HId(dl)%jsg-1
+    endif
+    G%HId(dl)%IecB = G%HId(dl)%iec ; G%HId(dl)%JecB = G%HId(dl)%jec
+    G%HId(dl)%IedB = G%HId(dl)%ied ; G%HId(dl)%JedB = G%HId(dl)%jed
+    G%HId(dl)%IegB = G%HId(dl)%ieg ; G%HId(dl)%JegB = G%HId(dl)%jeg
+  enddo
 
 end subroutine MOM_grid_init
 
@@ -429,6 +450,7 @@ subroutine set_derived_metrics(G, US)
     if (G%dyCu(I,j) < 0.0) G%dyCu(I,j) = 0.0
     G%IdxCu(I,j) = Adcroft_reciprocal(G%dxCu(I,j))
     G%IdyCu(I,j) = Adcroft_reciprocal(G%dyCu(I,j))
+    G%IdxCu_OBCmask(I,j) = G%OBCmaskCu(I,j) * G%IdxCu(I,j) ! This may be reset if masks are reset.
   enddo ; enddo
 
   do J=JsdB,JedB ; do i=isd,ied
@@ -436,6 +458,7 @@ subroutine set_derived_metrics(G, US)
     if (G%dyCv(i,J) < 0.0) G%dyCv(i,J) = 0.0
     G%IdxCv(i,J) = Adcroft_reciprocal(G%dxCv(i,J))
     G%IdyCv(i,J) = Adcroft_reciprocal(G%dyCv(i,J))
+    G%IdyCv_OBCmask(i,J) = G%OBCmaskCv(i,J) * G%IdyCv(i,J) ! This may be reset if masks are reset.
   enddo ; enddo
 
   do J=JsdB,JedB ; do I=IsdB,IedB
@@ -531,6 +554,7 @@ subroutine allocate_metrics(G)
   ALLOC_(G%dxBu(IsdB:IedB,JsdB:JedB))  ; G%dxBu(:,:) = 0.0
   ALLOC_(G%IdxT(isd:ied,jsd:jed))      ; G%IdxT(:,:) = 0.0
   ALLOC_(G%IdxCu(IsdB:IedB,jsd:jed))   ; G%IdxCu(:,:) = 0.0
+  ALLOC_(G%IdxCu_OBCmask(IsdB:IedB,jsd:jed)) ; G%IdxCu_OBCmask(:,:) = 0.0
   ALLOC_(G%IdxCv(isd:ied,JsdB:JedB))   ; G%IdxCv(:,:) = 0.0
   ALLOC_(G%IdxBu(IsdB:IedB,JsdB:JedB)) ; G%IdxBu(:,:) = 0.0
 
@@ -541,6 +565,7 @@ subroutine allocate_metrics(G)
   ALLOC_(G%IdyT(isd:ied,jsd:jed))      ; G%IdyT(:,:) = 0.0
   ALLOC_(G%IdyCu(IsdB:IedB,jsd:jed))   ; G%IdyCu(:,:) = 0.0
   ALLOC_(G%IdyCv(isd:ied,JsdB:JedB))   ; G%IdyCv(:,:) = 0.0
+  ALLOC_(G%IdyCv_OBCmask(isd:ied,JsdB:JedB)) ; G%IdyCv_OBCmask(:,:) = 0.0
   ALLOC_(G%IdyBu(IsdB:IedB,JsdB:JedB)) ; G%IdyBu(:,:) = 0.0
 
   ALLOC_(G%areaT(isd:ied,jsd:jed))       ; G%areaT(:,:) = 0.0
@@ -566,13 +591,13 @@ subroutine allocate_metrics(G)
   ALLOC_(G%dx_Cv(isd:ied,JsdB:JedB))     ; G%dx_Cv(:,:) = 0.0
   ALLOC_(G%dy_Cu(IsdB:IedB,jsd:jed))     ; G%dy_Cu(:,:) = 0.0
 
-  ALLOC_(G%porous_DminU(IsdB:IedB,jsd:jed)); G%porous_DminU(:,:) = 0.0
-  ALLOC_(G%porous_DmaxU(IsdB:IedB,jsd:jed)); G%porous_DmaxU(:,:) = 0.0
-  ALLOC_(G%porous_DavgU(IsdB:IedB,jsd:jed)); G%porous_DavgU(:,:) = 0.0
+  ALLOC_(G%porous_DminU(IsdB:IedB,jsd:jed)) ; G%porous_DminU(:,:) = 0.0
+  ALLOC_(G%porous_DmaxU(IsdB:IedB,jsd:jed)) ; G%porous_DmaxU(:,:) = 0.0
+  ALLOC_(G%porous_DavgU(IsdB:IedB,jsd:jed)) ; G%porous_DavgU(:,:) = 0.0
 
-  ALLOC_(G%porous_DminV(isd:ied,JsdB:JedB)); G%porous_DminV(:,:) = 0.0
-  ALLOC_(G%porous_DmaxV(isd:ied,JsdB:JedB)); G%porous_DmaxV(:,:) = 0.0
-  ALLOC_(G%porous_DavgV(isd:ied,JsdB:JedB)); G%porous_DavgV(:,:) = 0.0
+  ALLOC_(G%porous_DminV(isd:ied,JsdB:JedB)) ; G%porous_DminV(:,:) = 0.0
+  ALLOC_(G%porous_DmaxV(isd:ied,JsdB:JedB)) ; G%porous_DmaxV(:,:) = 0.0
+  ALLOC_(G%porous_DavgV(isd:ied,JsdB:JedB)) ; G%porous_DavgV(:,:) = 0.0
 
   ALLOC_(G%areaCu(IsdB:IedB,jsd:jed))  ; G%areaCu(:,:) = 0.0
   ALLOC_(G%areaCv(isd:ied,JsdB:JedB))  ; G%areaCv(:,:) = 0.0
@@ -580,7 +605,9 @@ subroutine allocate_metrics(G)
   ALLOC_(G%IareaCv(isd:ied,JsdB:JedB)) ; G%IareaCv(:,:) = 0.0
 
   ALLOC_(G%bathyT(isd:ied, jsd:jed)) ; G%bathyT(:,:) = -G%Z_ref
+  ALLOC_(G%meanSL(isd:ied, jsd:jed)) ; G%meanSL(:,:) = G%Z_ref
   ALLOC_(G%CoriolisBu(IsdB:IedB, JsdB:JedB)) ; G%CoriolisBu(:,:) = 0.0
+  ALLOC_(G%Coriolis2Bu(IsdB:IedB, JsdB:JedB)) ; G%Coriolis2Bu(:,:) = 0.0
   ALLOC_(G%dF_dx(isd:ied, jsd:jed)) ; G%dF_dx(:,:) = 0.0
   ALLOC_(G%dF_dy(isd:ied, jsd:jed)) ; G%dF_dy(:,:) = 0.0
 
@@ -611,6 +638,8 @@ subroutine MOM_grid_end(G)
   DEALLOC_(G%dyT)  ; DEALLOC_(G%dyCu)  ; DEALLOC_(G%dyCv)  ; DEALLOC_(G%dyBu)
   DEALLOC_(G%IdyT) ; DEALLOC_(G%IdyCu) ; DEALLOC_(G%IdyCv) ; DEALLOC_(G%IdyBu)
 
+  DEALLOC_(G%IdxCu_OBCmask) ; DEALLOC_(G%IdyCv_OBCmask)
+
   DEALLOC_(G%areaT)  ; DEALLOC_(G%IareaT)
   DEALLOC_(G%areaBu) ; DEALLOC_(G%IareaBu)
   DEALLOC_(G%areaCu) ; DEALLOC_(G%IareaCu)
@@ -626,9 +655,10 @@ subroutine MOM_grid_end(G)
 
   DEALLOC_(G%dx_Cv) ; DEALLOC_(G%dy_Cu)
 
-  DEALLOC_(G%bathyT)  ; DEALLOC_(G%CoriolisBu)
-  DEALLOC_(G%dF_dx)  ; DEALLOC_(G%dF_dy)
-  DEALLOC_(G%sin_rot) ; DEALLOC_(G%cos_rot)
+  DEALLOC_(G%bathyT)     ; DEALLOC_(G%meanSL)
+  DEALLOC_(G%CoriolisBu) ; DEALLOC_(G%Coriolis2Bu)
+  DEALLOC_(G%dF_dx)      ; DEALLOC_(G%dF_dy)
+  DEALLOC_(G%sin_rot)    ; DEALLOC_(G%cos_rot)
 
   DEALLOC_(G%porous_DminU) ; DEALLOC_(G%porous_DmaxU) ; DEALLOC_(G%porous_DavgU)
   DEALLOC_(G%porous_DminV) ; DEALLOC_(G%porous_DmaxV) ; DEALLOC_(G%porous_DavgV)

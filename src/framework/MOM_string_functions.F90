@@ -1,7 +1,9 @@
+! This file is part of MOM6, the Modular Ocean Model version 6.
+! See the LICENSE file for licensing information.
+! SPDX-License-Identifier: Apache-2.0
+
 !> Handy functions for manipulating strings
 module MOM_string_functions
-
-! This file is part of MOM6. See LICENSE.md for the license.
 
 use iso_fortran_env, only : stdout=>output_unit, stderr=>error_unit
 
@@ -17,6 +19,8 @@ public extract_integer
 public extract_real
 public remove_spaces
 public slasher
+public trim_trailing_commas
+public ints_to_string
 
 contains
 
@@ -86,7 +90,7 @@ end function left_ints
 
 !> Returns a left-justified string with a real formatted like '(G)'
 function left_real(val)
-  real, intent(in)  :: val !< The real variable to convert to a string
+  real, intent(in)  :: val !< The real variable to convert to a string, in arbitrary units [A]
   character(len=32) :: left_real !< The output string
 
   integer :: l, ind
@@ -139,7 +143,7 @@ end function left_real
 !> Returns a character string of a comma-separated, compact formatted, reals
 !! e.g. "1., 2., 5*3., 5.E2"
 function left_reals(r,sep)
-  real, intent(in) :: r(:) !< The array of real variables to convert to a string
+  real, intent(in) :: r(:) !< The array of real variables to convert to a string, in arbitrary units [A]
   character(len=*), optional, intent(in) :: sep !< The separator between
                                     !! successive values, by default it is ', '.
   character(len=:), allocatable :: left_reals !< The output string
@@ -179,10 +183,10 @@ end function left_reals
 !> Returns True if the string can be read/parsed to give the exact value of "val"
 function isFormattedFloatEqualTo(str, val)
   character(len=*), intent(in) :: str !< The string to parse
-  real,             intent(in) :: val !< The real value to compare with
+  real,             intent(in) :: val !< The real value to compare with, in arbitrary units [A]
   logical                      :: isFormattedFloatEqualTo
   ! Local variables
-  real :: scannedVal
+  real :: scannedVal ! The value extraced from str, in arbitrary units [A]
 
   isFormattedFloatEqualTo=.false.
   read(str(1:),*,err=987) scannedVal
@@ -214,7 +218,7 @@ character(len=120) function extract_word(string, separators, n)
   extract_word = ''
   lastCharIsSeperator = .true.
   ns = len_trim(string)
-  i = 0; b=0; e=0; nw=0
+  i = 0 ; b=0 ; e=0 ; nw=0
   do while (i<ns)
     i = i+1
     if (lastCharIsSeperator) then ! search for end of word
@@ -263,12 +267,12 @@ integer function extract_integer(string, separators, n, missing_value)
 
 end function extract_integer
 
-!> Returns the real corresponding to the nth word in the argument.
+!> Returns the real corresponding to the nth word in the argument, in arbitrary units [A].
 real function extract_real(string, separators, n, missing_value)
   character(len=*), intent(in) :: string     !< String to scan
   character(len=*), intent(in) :: separators !< Characters to use for delineation
   integer,          intent(in) :: n          !< Number of word to extract
-  real, optional,   intent(in) :: missing_value !< Value to assign if word is missing
+  real, optional,   intent(in) :: missing_value !< Value to assign if word is missing, in arbitrary units [A]
   ! Local variables
   character(len=20) :: word
 
@@ -294,7 +298,7 @@ character(len=120) function remove_spaces(string)
   logical :: lastCharIsSeperator
   lastCharIsSeperator = .true.
   ns = len_trim(string)
-  i = 0; o = 0
+  i = 0 ; o = 0
   do while (i<ns)
     i = i+1
     if (string(i:i) /= ' ') then ! Copy character to output string
@@ -314,6 +318,7 @@ logical function string_functions_unit_tests(verbose)
   logical, intent(in) :: verbose !< If true, write results to stdout
   ! Local variables
   integer :: i(5) = (/ -1, 1, 3, 3, 0 /)
+  ! This is an array of real test values, in arbitrary units [A]
   real :: r(8) = (/ 0., 1., -2., 1.3, 3.E-11, 3.E-11, 3.E-11, -5.1E12 /)
   logical :: fail, v
   fail = .false.
@@ -325,6 +330,10 @@ logical function string_functions_unit_tests(verbose)
   fail = fail .or. localTestS(v,left_reals(r(:)),'0.0, 1.0, -2.0, 1.3, 3*3.0E-11, -5.1E+12')
   fail = fail .or. localTestS(v,left_reals(r(:),sep=' '),'0.0 1.0 -2.0 1.3 3*3.0E-11 -5.1E+12')
   fail = fail .or. localTestS(v,left_reals(r(:),sep=','),'0.0,1.0,-2.0,1.3,3*3.0E-11,-5.1E+12')
+  fail = fail .or. localTestS(v,ints_to_string(i(:),5),'_-0001_0001_0003_0003_0000')
+  fail = fail .or. localTestS(v,ints_to_string(i(2:),2),'_0001_0003')
+  fail = fail .or. localTestS(v,ints_to_string(i(:)),'_-0001_0001_0003')
+  fail = fail .or. localTestS(v,trim_trailing_commas("One, Two, Three, "), "One, Two, Three")
   fail = fail .or. localTestS(v,extractWord("One Two,Three",1),"One")
   fail = fail .or. localTestS(v,extractWord("One Two,Three",2),"Two")
   fail = fail .or. localTestS(v,extractWord("One Two,Three",3),"Three")
@@ -387,8 +396,8 @@ end function localTestI
 !> True if r1 is not equal to r2. False otherwise.
 logical function localTestR(verbose,r1,r2)
   logical, intent(in) :: verbose !< If true, write results to stdout
-  real, intent(in) :: r1 !< Float
-  real, intent(in) :: r2 !< Float
+  real, intent(in) :: r1 !< The first value to compare, in arbitrary units [A]
+  real, intent(in) :: r2 !< The first value to compare, in arbitrary units [A]
   localTestR=.false.
   if (r1/=r2) localTestR=.true.
   if (localTestR .or. verbose) then
@@ -415,6 +424,49 @@ function slasher(dir)
     slasher = trim(dir)//"/"
   endif
 end function slasher
+
+!> Returns a left-adjusted string with trailing blanks and commas removed.
+function trim_trailing_commas(in_str) result(out_str)
+  character(len=*), intent(in) :: in_str  !< A string that is to be left adjusted and have
+                                          !! its trailing commas and white space removed.
+  character(len=len(in_str))   :: out_str !< A left-adjusted version of in_str with
+                                          !! trailing commas and white space removed
+
+  out_str = trim(adjustl(in_str))
+  if (len_trim(out_str) > 0) then
+    if (out_str(len_trim(out_str):len_trim(out_str)) == ",") then
+      out_str = out_str(1:len_trim(out_str) - 1)
+    endif
+    out_str = trim(out_str)
+  endif
+
+end function trim_trailing_commas
+
+!> Convert the first n elements (3 by default) of an integer array into an underscore delimited string.
+function ints_to_string(a, n) result(i2s)
+  integer, dimension(:), intent(in) :: a !< The array of integers to translate
+  integer, optional    , intent(in) :: n !< The number of elements to translate, by default the lesser
+                                         !! of 3 or all of the integers
+  character(len=5*size(a)+1) :: i2s !< The returned underscore delimited string of integers
+
+  character(len=8) :: i2s_temp
+  integer :: i, n_max
+
+  n_max = 3
+  if (present(n)) n_max = n
+
+  i2s = ''
+  do i=1,min(size(a), n_max)
+    if (a(i) < 0) then
+      write (i2s_temp, '(I5.4)') a(i)
+    else
+      write (i2s_temp, '(I4.4)') a(i)
+    endif
+    i2s = trim(i2s) //'_'// trim(i2s_temp)
+  enddo
+  i2s = adjustl(i2s)
+end function ints_to_string
+
 
 !> \namespace mom_string_functions
 !!
