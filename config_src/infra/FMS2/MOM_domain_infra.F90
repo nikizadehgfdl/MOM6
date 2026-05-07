@@ -34,7 +34,6 @@ use fms_affinity_mod, only : fms_affinity_init, fms_affinity_set, fms_affinity_g
 
 ! The `group_pass_type` fields are never accessed, so we keep it as an FMS type
 use mpp_domains_mod, only : group_pass_type => mpp_group_update_type
-#define MAX_DSAMP_LEV 3
 
 implicit none ; private
 
@@ -1379,7 +1378,6 @@ subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, l
   if (.not.associated(MOM_dom)) then
     allocate(MOM_dom)
     allocate(MOM_dom%mpp_domain)
-    do dl=2,MAX_DSAMP_LEV ; allocate(MOM_dom%mpp_domain_d(dl)) ; enddo
   endif
 
   MOM_dom%name = "MOM" ; if (present(domain_name)) MOM_dom%name = trim(domain_name)
@@ -1447,12 +1445,6 @@ subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, l
 
   call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain)
 
-  do dl=2,MAX_DSAMP_LEV
-    !Downsample diagnostics calculations do not need halos. 
-    call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d(dl), coarsen=dl, halo_size=0, &
-                        domain_name="MOM_domain_d" // char(48+dl))
-  enddo
-
 end subroutine create_MOM_domain
 
 !> dealloc_MOM_domain deallocates memory associated with a pointer to a MOM_domain_type
@@ -1472,9 +1464,6 @@ subroutine deallocate_MOM_domain(MOM_domain, cursory)
       deallocate(MOM_domain%mpp_domain)
     endif
     if (associated(MOM_domain%mpp_domain_d)) then
-      if (invasive) then
-        do dl=2,MAX_DSAMP_LEV ; call mpp_deallocate_domain(MOM_domain%mpp_domain_d(dl)); enddo
-      endif
       deallocate(MOM_domain%mpp_domain_d)
     endif
     if (associated(MOM_domain%maskmap)) deallocate(MOM_domain%maskmap)
@@ -1587,7 +1576,6 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain
   if (.not.associated(MOM_dom)) then
     allocate(MOM_dom)
     allocate(MOM_dom%mpp_domain)
-    do dl=2,MAX_DSAMP_LEV ; allocate(MOM_dom%mpp_domain_d(dl)) ; enddo
   endif
 
 ! Save the extra data for creating other domains of different resolution that overlay this domain
@@ -1709,11 +1697,6 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain
   endif
 
   call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain, xextent=exni, yextent=exnj)
-  do dl=2,MAX_DSAMP_LEV
-    !Downsample diagnostics calculations do not need halos. 
-    call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain_d(dl), coarsen=dl, halo_size=0, &
-                        domain_name="MOM_domain_d" // char(48+dl))
-  enddo
 
 end subroutine clone_MD_to_MD
 
@@ -1845,20 +1828,18 @@ subroutine get_domain_extent_MD(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed, 
   local = .true. ; if (present(local_indexing)) local = local_indexing
   ind_off = 0 ; if (present(index_offset)) ind_off = index_offset
 
-  coarsen_lev = 1 ; if (present(coarsen)) coarsen_lev = coarsen
+  coarsen_lev = 0 ; if (present(coarsen)) coarsen_lev = coarsen
 
-  if (coarsen_lev == 1) then
+  if (coarsen_lev == 0) then
     call mpp_get_compute_domain(Domain%mpp_domain, isc, iec, jsc, jec)
     call mpp_get_data_domain(Domain%mpp_domain, isd, ied, jsd, jed)
     call mpp_get_global_domain(Domain%mpp_domain, isg_, ieg_, jsg_, jeg_)
-  elseif (coarsen_lev <= MAX_DSAMP_LEV) then
+  else
     if (.not.associated(Domain%mpp_domain_d)) call MOM_error(FATAL, &
             "get_domain_extent called with coarsen_lev, but Domain%mpp_domain_d(coarsen_lev) is not associated.")
     call mpp_get_compute_domain(Domain%mpp_domain_d(coarsen_lev), isc, iec, jsc, jec)
     call mpp_get_data_domain(Domain%mpp_domain_d(coarsen_lev), isd, ied, jsd, jed)
     call mpp_get_global_domain(Domain%mpp_domain_d(coarsen_lev), isg_, ieg_, jsg_, jeg_)
-  else
-    call MOM_error(FATAL, "get_domain_extent called with an unsupported level of coarsening.")
   endif
 
   if (local) then

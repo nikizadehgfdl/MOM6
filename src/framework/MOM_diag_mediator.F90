@@ -37,12 +37,12 @@ use MOM_time_manager,     only : time_type, get_time
 use MOM_unit_scaling,     only : unit_scale_type
 use MOM_variables,        only : thermo_var_ptrs
 use MOM_verticalGrid,     only : verticalGrid_type
+use MOM_domains,          only : get_domain_extent, clone_MOM_domain
 
 implicit none ; private
 
 #undef __DO_SAFETY_CHECKS__
 #define IMPLIES(A, B) ((.not. (A)) .or. (B))
-#define MAX_DSAMP_LEV 3
 
 public set_axes_info, post_data, register_diag_field, time_type
 public post_data_3d_by_column, post_data_3d_final
@@ -132,7 +132,8 @@ type, public :: axes_grp
   logical :: needs_interpolating = .false. !< If true, indicates that this axes group is for a sampled
                                          !! interface-located field that must be interpolated to
                                          !! these axes. Used for rank>2.
-  integer :: downsample_level = 1 !< If greater than 1, the factor by which this diagnostic/axes/masks be downsampled
+  integer :: downsample_level_factor = 1 !< If greater than 1, the factor by which this diagnostic/axes/masks be downsampled
+  integer :: downsample_level_index = 0 !< If greater than 0, the index for the downsample level for this diagnostic in the diag_cs%dsamp array.
   ! For horizontally averaged diagnostics (applies to 2d and 3d fields only)
   type(axes_grp), pointer :: xyave_axes => null() !< The associated 1d axes for horizontally area-averaged diagnostics
   ! ID's for cell_measures
@@ -142,7 +143,7 @@ type, public :: axes_grp
   ! For masking
   real, pointer, dimension(:,:)   :: mask2d => null() !< Mask for 2d (x-y) axes [nondim]
   real, pointer, dimension(:,:,:) :: mask3d => null() !< Mask for 3d axes [nondim]
-  type(diag_dsamp), dimension(2:MAX_DSAMP_LEV) :: dsamp !< Downsample container
+  type(diag_dsamp), dimension(:), allocatable :: dsamp !< Downsample container
 
   ! For diagnostics posted piecemeal
   type(diag_buffer_2d) :: piecemeal_2d !< A dynamically reallocated buffer for 2d piecemeal diagnostics
@@ -301,7 +302,10 @@ type, public :: diag_ctrl
   real, dimension(:,:,:), pointer :: mask3dCui => null()
   real, dimension(:,:,:), pointer :: mask3dCvi => null()
 
-  type(diagcs_dsamp), dimension(2:MAX_DSAMP_LEV) :: dsamp !< Downsample control container
+  integer :: num_diag_dsamp_levels !< The number of downsampled levels requested in the parameters files (default 0)
+  integer, dimension(:), allocatable :: diag_dsamp_levels !< The downsample levels requested by diagnostics registrations
+  type(diagcs_dsamp), dimension(:), allocatable :: dsamp !< Downsample control container
+                                                         !! The size to be determined from paramaters files (default 0)
 
   !>@}
 
@@ -615,7 +619,7 @@ subroutine set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_n
 
   ! Local variables
   integer :: id_xq, id_yq, id_zl, id_zi, id_xh, id_yh
-  integer :: i, j, nz, dl
+  integer :: i, j, nz, dl, dlfac
   real, dimension(:), pointer :: gridLonT_dsamp =>NULL() ! The longitude of downsampled T points for labeling
                                                          ! the output axes, often in units of [degrees_N] or
                                                          ! [km] or [m] or [gridpoints].
@@ -632,12 +636,14 @@ subroutine set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_n
 
   id_zl = id_zl_native ; id_zi = id_zi_native
   ! Axes group for native downsampled diagnostics
-  do dl=2,MAX_DSAMP_LEV
+  !Loop over the downsampling levels requested in parameters.
+  do dl=1, diag_cs%num_diag_dsamp_levels
+    dlfac = diag_cs%diag_dsamp_levels(dl) ! The actual downsampling factor for this level
     if (G%symmetric) then
       allocate(gridLonB_dsamp(diag_cs%dsamp(dl)%isgB:diag_cs%dsamp(dl)%iegB))
       allocate(gridLatB_dsamp(diag_cs%dsamp(dl)%jsgB:diag_cs%dsamp(dl)%jegB))
-      do i=diag_cs%dsamp(dl)%isgB,diag_cs%dsamp(dl)%iegB ; gridLonB_dsamp(i) = G%gridLonB(G%isgB+dl*i) ; enddo
-      do j=diag_cs%dsamp(dl)%jsgB,diag_cs%dsamp(dl)%jegB ; gridLatB_dsamp(j) = G%gridLatB(G%jsgB+dl*j) ; enddo
+      do i=diag_cs%dsamp(dl)%isgB,diag_cs%dsamp(dl)%iegB ; gridLonB_dsamp(i) = G%gridLonB(G%isgB+dlfac*i) ; enddo
+      do j=diag_cs%dsamp(dl)%jsgB,diag_cs%dsamp(dl)%jegB ; gridLatB_dsamp(j) = G%gridLatB(G%jsgB+dlfac*j) ; enddo
       id_xq = diag_axis_init('xq', gridLonB_dsamp, G%x_axis_units, 'x', &
             'q point nominal longitude', G%Domain, coarsen=dl)
       id_yq = diag_axis_init('yq', gridLatB_dsamp, G%y_axis_units, 'y', &
@@ -646,8 +652,8 @@ subroutine set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_n
     else
       allocate(gridLonB_dsamp(diag_cs%dsamp(dl)%isg:diag_cs%dsamp(dl)%ieg))
       allocate(gridLatB_dsamp(diag_cs%dsamp(dl)%jsg:diag_cs%dsamp(dl)%jeg))
-      do i=diag_cs%dsamp(dl)%isg,diag_cs%dsamp(dl)%ieg ; gridLonB_dsamp(i) = G%gridLonB(G%isg+dl*i-2) ; enddo
-      do j=diag_cs%dsamp(dl)%jsg,diag_cs%dsamp(dl)%jeg ; gridLatB_dsamp(j) = G%gridLatB(G%jsg+dl*j-2) ; enddo
+      do i=diag_cs%dsamp(dl)%isg,diag_cs%dsamp(dl)%ieg ; gridLonB_dsamp(i) = G%gridLonB(G%isg+dlfac*i-2) ; enddo
+      do j=diag_cs%dsamp(dl)%jsg,diag_cs%dsamp(dl)%jeg ; gridLatB_dsamp(j) = G%gridLatB(G%jsg+dlfac*j-2) ; enddo
       id_xq = diag_axis_init('xq', gridLonB_dsamp, G%x_axis_units, 'x', &
             'q point nominal longitude', G%Domain, coarsen=dl)
       id_yq = diag_axis_init('yq', gridLatB_dsamp, G%y_axis_units, 'y', &
@@ -657,8 +663,8 @@ subroutine set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_n
 
     allocate(gridLonT_dsamp(diag_cs%dsamp(dl)%isg:diag_cs%dsamp(dl)%ieg))
     allocate(gridLatT_dsamp(diag_cs%dsamp(dl)%jsg:diag_cs%dsamp(dl)%jeg))
-    do i=diag_cs%dsamp(dl)%isg,diag_cs%dsamp(dl)%ieg ; gridLonT_dsamp(i) = G%gridLonT(G%isg+dl*i-2) ; enddo
-    do j=diag_cs%dsamp(dl)%jsg,diag_cs%dsamp(dl)%jeg ; gridLatT_dsamp(j) = G%gridLatT(G%jsg+dl*j-2) ; enddo
+    do i=diag_cs%dsamp(dl)%isg,diag_cs%dsamp(dl)%ieg ; gridLonT_dsamp(i) = G%gridLonT(G%isg+dlfac*i-2) ; enddo
+    do j=diag_cs%dsamp(dl)%jsg,diag_cs%dsamp(dl)%jeg ; gridLatT_dsamp(j) = G%gridLatT(G%jsg+dlfac*j-2) ; enddo
     id_xh = diag_axis_init('xh', gridLonT_dsamp, G%x_axis_units, 'x', &
           'h point nominal longitude', G%Domain, coarsen=dl)
     id_yh = diag_axis_init('yh', gridLatT_dsamp, G%y_axis_units, 'y', &
@@ -889,67 +895,68 @@ subroutine set_masks_for_axes_dsamp(G, diag_cs)
   type(diag_ctrl),               pointer    :: diag_cs !< A pointer to a type with many variables
                                                        !! used for diagnostics
   ! Local variables
-  integer :: c, dl
+  integer :: c, dl, dlfac
   type(axes_grp), pointer :: axes => NULL() ! Current axes, for convenience
 
   ! Each downsampled axis needs both downsampled and non-downsampled masks.
   ! The downsampled mask is needed for sending out the diagnostics output via diag_manager.
   ! The non-downsampled mask is needed for downsampling the diagnostics field.
-  do dl=2,MAX_DSAMP_LEV
+  do dl=1, diag_cs%num_diag_dsamp_levels
+    dlfac = diag_cs%diag_dsamp_levels(dl) ! The actual downsampling factor for this level
     do c=1, diag_cs%num_diag_coords
       ! Level/layer h-points in diagnostic coordinate
       axes => diag_cs%remap_axesTL(c)
       call downsample_mask(axes%mask3d, diag_cs%dsamp(dl)%remap_axesTL(c)%dsamp(dl)%mask3d, &
-              dl, G%isc, G%jsc, G%isd, G%jsd, &
+              dlfac, G%isc, G%jsc, G%isd, G%jsd, &
               G%HId(dl)%isc, G%HId(dl)%iec, G%HId(dl)%jsc, G%HId(dl)%jec, G%HId(dl)%isd, G%HId(dl)%ied, &
               G%HId(dl)%jsd, G%HId(dl)%jed)
       diag_cs%dsamp(dl)%remap_axesTL(c)%mask3d => axes%mask3d !set non-downsampled mask
       ! Level/layer u-points in diagnostic coordinate
       axes => diag_cs%remap_axesCuL(c)
       call downsample_mask(axes%mask3d, diag_cs%dsamp(dl)%remap_axesCuL(c)%dsamp(dl)%mask3d, &
-              dl, G%IscB, G%jsc, G%IsdB, G%jsd, &
+              dlfac, G%IscB, G%jsc, G%IsdB, G%jsd, &
               G%HId(dl)%IscB, G%HId(dl)%IecB, G%HId(dl)%jsc, G%HId(dl)%jec, G%HId(dl)%IsdB, G%HId(dl)%IedB, &
               G%HId(dl)%jsd, G%HId(dl)%jed)
       diag_cs%dsamp(dl)%remap_axesCul(c)%mask3d => axes%mask3d !set non-downsampled mask
       ! Level/layer v-points in diagnostic coordinate
       axes => diag_cs%remap_axesCvL(c)
       call downsample_mask(axes%mask3d, diag_cs%dsamp(dl)%remap_axesCvL(c)%dsamp(dl)%mask3d, &
-              dl, G%isc, G%JscB, G%isd, G%JsdB, &
+              dlfac, G%isc, G%JscB, G%isd, G%JsdB, &
               G%HId(dl)%isc, G%HId(dl)%iec, G%HId(dl)%JscB, G%HId(dl)%JecB, G%HId(dl)%isd, G%HId(dl)%ied, &
               G%HId(dl)%JsdB, G%HId(dl)%JedB)
       diag_cs%dsamp(dl)%remap_axesCvL(c)%mask3d => axes%mask3d !set non-downsampled mask
       ! Level/layer q-points in diagnostic coordinate
       axes => diag_cs%remap_axesBL(c)
       call downsample_mask(axes%mask3d, diag_cs%dsamp(dl)%remap_axesBL(c)%dsamp(dl)%mask3d, &
-              dl, G%IscB, G%JscB, G%IsdB, G%JsdB, &
+              dlfac, G%IscB, G%JscB, G%IsdB, G%JsdB, &
               G%HId(dl)%IscB, G%HId(dl)%IecB, G%HId(dl)%JscB, G%HId(dl)%JecB, G%HId(dl)%IsdB, G%HId(dl)%IedB, &
               G%HId(dl)%JsdB, G%HId(dl)%JedB)
       diag_cs%dsamp(dl)%remap_axesBL(c)%mask3d => axes%mask3d !set non-downsampled mask
       ! Interface h-points in diagnostic coordinate (w-point)
       axes => diag_cs%remap_axesTi(c)
       call downsample_mask(axes%mask3d, diag_cs%dsamp(dl)%remap_axesTi(c)%dsamp(dl)%mask3d,  &
-              dl, G%isc, G%jsc, G%isd, G%jsd, &
+              dlfac, G%isc, G%jsc, G%isd, G%jsd, &
               G%HId(dl)%isc, G%HId(dl)%iec, G%HId(dl)%jsc, G%HId(dl)%jec, G%HId(dl)%isd, G%HId(dl)%ied, &
               G%HId(dl)%jsd, G%HId(dl)%jed)
       diag_cs%dsamp(dl)%remap_axesTi(c)%mask3d => axes%mask3d !set non-downsampled mask
       ! Interface u-points in diagnostic coordinate
       axes => diag_cs%remap_axesCui(c)
       call downsample_mask(axes%mask3d, diag_cs%dsamp(dl)%remap_axesCui(c)%dsamp(dl)%mask3d,  &
-              dl, G%IscB, G%jsc, G%IsdB, G%jsd, &
+              dlfac, G%IscB, G%jsc, G%IsdB, G%jsd, &
               G%HId(dl)%IscB, G%HId(dl)%IecB, G%HId(dl)%jsc, G%HId(dl)%jec, G%HId(dl)%IsdB, G%HId(dl)%IedB, &
               G%HId(dl)%jsd, G%HId(dl)%jed)
       diag_cs%dsamp(dl)%remap_axesCui(c)%mask3d => axes%mask3d !set non-downsampled mask
       ! Interface v-points in diagnostic coordinate
       axes => diag_cs%remap_axesCvi(c)
       call downsample_mask(axes%mask3d, diag_cs%dsamp(dl)%remap_axesCvi(c)%dsamp(dl)%mask3d,  &
-              dl, G%isc, G%JscB, G%isd, G%JsdB, &
+              dlfac, G%isc, G%JscB, G%isd, G%JsdB, &
               G%HId(dl)%isc, G%HId(dl)%iec, G%HId(dl)%JscB, G%HId(dl)%JecB, G%HId(dl)%isd, G%HId(dl)%ied, &
               G%HId(dl)%JsdB, G%HId(dl)%JedB)
       diag_cs%dsamp(dl)%remap_axesCvi(c)%mask3d => axes%mask3d !set non-downsampled mask
       ! Interface q-points in diagnostic coordinate
       axes => diag_cs%remap_axesBi(c)
       call downsample_mask(axes%mask3d, diag_cs%dsamp(dl)%remap_axesBi(c)%dsamp(dl)%mask3d,  &
-              dl, G%IscB, G%JscB, G%IsdB, G%JsdB, &
+              dlfac, G%IscB, G%JscB, G%IsdB, G%JsdB, &
               G%HId(dl)%IscB, G%HId(dl)%IecB, G%HId(dl)%JscB, G%HId(dl)%JecB, G%HId(dl)%IsdB, G%HId(dl)%IedB, &
               G%HId(dl)%JsdB, G%HId(dl)%JedB)
       diag_cs%dsamp(dl)%remap_axesBi(c)%mask3d => axes%mask3d !set non-downsampled mask
@@ -1154,7 +1161,7 @@ subroutine define_axes_group_dsamp(diag_cs, handles, axes, dl, nz, vertical_coor
   type(diag_ctrl), target,    intent(in)  :: diag_cs !< Diagnostics control structure
   integer, dimension(:),      intent(in)  :: handles !< A list of 1D axis handles
   type(axes_grp),             intent(out) :: axes    !< The group of 1D axes
-  integer,                    intent(in)  :: dl      !< Downsample level
+  integer,                    intent(in)  :: dl      !< Downsample level index
   integer,          optional, intent(in)  :: nz      !< Number of layers in this diagnostic grid
   integer,          optional, intent(in)  :: vertical_coordinate_number !< Index number for vertical coordinate
   character(len=*), optional, intent(in)  :: x_cell_method !< A x-direction cell method used to construct the
@@ -1216,7 +1223,8 @@ subroutine define_axes_group_dsamp(diag_cs, handles, axes, dl, nz, vertical_coor
   else
     axes%v_cell_method = ''
   endif
-  axes%downsample_level = dl
+  axes%downsample_level_index = dl
+  axes%downsample_level_factor = diag_cs%diag_dsamp_levels(dl)
   if (present(nz)) axes%nz = nz
   if (present(vertical_coordinate_number)) axes%vertical_coordinate_number = vertical_coordinate_number
   if (present(is_h_point)) axes%is_h_point = is_h_point
@@ -1256,6 +1264,7 @@ subroutine define_axes_group_dsamp(diag_cs, handles, axes, dl, nz, vertical_coor
     endif
   endif
 
+  if (.Not. allocated(axes%dsamp)) allocate(axes%dsamp(diag_cs%num_diag_dsamp_levels))
   axes%dsamp(dl)%mask2d => null()
   if (axes%rank==2) then
     if (axes%is_h_point) axes%dsamp(dl)%mask2d => diag_cs%dsamp(dl)%mask2dT
@@ -1450,7 +1459,7 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
   integer :: isv, iev, jsv, jev, i, j, isv_o, jsv_o
   real, dimension(:,:), allocatable, target :: locfield_dsamp ! A downsampled version of locfield [a]
   real, dimension(:,:), allocatable, target :: locmask_dsamp  ! A downsampled version of locmask [nondim]
-  integer :: dl
+  integer :: dl, dlfac
   integer :: time_days
   integer :: time_seconds
   character(len=300) :: mesg
@@ -1515,17 +1524,19 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
     if (associated(diag%axes%mask2d)) locmask => diag%axes%mask2d
   endif
 
-  dl = 1
+  dlfac = 1
   if (not_static .and. associated(diag%axes)) &
-    dl = diag%axes%downsample_level ! Static field downsampling is not supported yet.
+    dlfac = diag%axes%downsample_level_factor ! Static field downsampling is not supported yet.
   ! Downsample the diag field and mask as appropriate.
-  if (dl > 1) then
+  if (dlfac > 1) then
+    dl = diag%axes%downsample_level_index
     isv_o = isv ; jsv_o = jsv
     call downsample_diag_field(locfield, locfield_dsamp, dl, diag_cs, diag, isv, iev, jsv, jev, mask)
     if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.)) deallocate( locfield )
     locfield => locfield_dsamp
     if (present(mask)) then
-      call downsample_field_2d(locmask, locmask_dsamp, dl, MSK, locmask, diag_cs, diag, &
+      !Note that downsample_field_2d needs the actual downsampling factor, not the index
+      call downsample_field_2d(locmask, locmask_dsamp, dlfac, MSK, locmask, diag_cs, diag, &
                                isv_o, jsv_o, isv, iev, jsv, jev)
       locmask => locmask_dsamp
     elseif (associated(diag%axes%dsamp(dl)%mask2d)) then
@@ -1577,7 +1588,7 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
       endif
     endif
   endif
-  if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.) .and. dl<2) &
+  if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.) .and. dlfac<2) &
     deallocate( locfield )
 end subroutine post_data_2d_low
 
@@ -1766,7 +1777,7 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
   integer :: isv, iev, jsv, jev, ks, ke, i, j, k, isv_c, jsv_c, isv_o, jsv_o
   real, dimension(:,:,:), allocatable, target :: locfield_dsamp ! A downsampled version of locfield [a]
   real, dimension(:,:,:), allocatable, target :: locmask_dsamp  ! A downsampled version of locmask [nondim]
-  integer :: dl
+  integer :: dl, dlfac
 
   integer :: time_days
   integer :: time_seconds
@@ -1849,17 +1860,20 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
     if (associated(diag%axes%mask3d)) locmask => diag%axes%mask3d
   endif
 
-  dl = 1
+  dlfac = 1
   if (not_static .and. associated(diag%axes)) &
-    dl = diag%axes%downsample_level ! Static field downsampling is not supported yet.
+    dlfac = diag%axes%downsample_level_factor ! Static field downsampling is not supported yet.
   ! Downsample the diag field and mask as appropriate.
-  if (dl > 1) then
+  if (dlfac > 1) then
+    dl = diag%axes%downsample_level_index
     isv_o = isv ; jsv_o = jsv
+    !Note that downsample_diag_field_3d takes the downsampling index
     call downsample_diag_field(locfield, locfield_dsamp, dl, diag_cs, diag, isv, iev, jsv, jev, mask)
     if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.)) deallocate( locfield )
     locfield => locfield_dsamp
     if (present(mask)) then
-      call downsample_field_3d(locmask, locmask_dsamp, dl, MSK, locmask, diag_cs, diag, &
+      !Note that downsample_field_3d takes the actual downsampling factor, not the index
+      call downsample_field_3d(locmask, locmask_dsamp, dlfac, MSK, locmask, diag_cs, diag, &
                                isv_o, jsv_o, isv, iev, jsv, jev)
       locmask => locmask_dsamp
     elseif (associated(diag%axes%dsamp(dl)%mask3d)) then
@@ -1914,7 +1928,7 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
     endif
   endif
 
-  if (diag%fms_xyave_diag_id>0 .and. dl<2) then
+  if (diag%fms_xyave_diag_id>0 .and. dlfac<2) then
     call post_xy_average(diag_cs, diag, locfield)
   endif
 
@@ -2389,11 +2403,11 @@ integer function register_diag_field(module_name, field_name, axes_in, init_time
   enddo ! i
 
   ! Register downsampled diagnostics
-  do dl=2,MAX_DSAMP_LEV
+  do dl=1, diag_cs%num_diag_dsamp_levels
     ! Do not attempt to checksum the downsampled diagnostics
     if (diag_cs%diag_as_chksum) cycle
 
-    write(dl_str, '(i0)') dl
+    write(dl_str, '(i0)') diag_cs%diag_dsamp_levels(dl)
     new_module_name = trim(module_name)//'_d'//trim(dl_str)
 
     axes_d2 => null()
@@ -3421,7 +3435,7 @@ subroutine diag_mediator_init(G, GV, US, nz, param_file, diag_cs, doc_file_dir)
   ! is not necessary that the metrics and axis labels be set up yet.
 
   ! Local variables
-  integer :: ios, i, new_unit, dl
+  integer :: ios, i, new_unit, dl, dlfac
   logical :: opened, new_file
   integer :: remap_answer_date    ! The vintage of the order of arithmetic and expressions to use
                                   ! for remapping.  Values below 20190101 recover the remapping
@@ -3536,17 +3550,67 @@ subroutine diag_mediator_init(G, GV, US, nz, param_file, diag_cs, doc_file_dir)
   diag_cs%isd = G%isd ; diag_cs%ied = G%ied
   diag_cs%jsd = G%jsd ; diag_cs%jed = G%jed
 
-  !Downsample indices for diagnostics that are on a coarser grid than the model grid.
-  do dl=2,MAX_DSAMP_LEV
-    diag_cs%dsamp(dl)%isc = G%HId(dl)%isc - (G%HId(dl)%isd-1) ; diag_cs%dsamp(dl)%iec = G%HId(dl)%iec - (G%HId(dl)%isd-1)
-    diag_cs%dsamp(dl)%jsc = G%HId(dl)%jsc - (G%HId(dl)%jsd-1) ; diag_cs%dsamp(dl)%jec = G%HId(dl)%jec - (G%HId(dl)%jsd-1)
-    diag_cs%dsamp(dl)%isd = G%HId(dl)%isd ; diag_cs%dsamp(dl)%ied = G%HId(dl)%ied
-    diag_cs%dsamp(dl)%jsd = G%HId(dl)%jsd ; diag_cs%dsamp(dl)%jed = G%HId(dl)%jed
-    diag_cs%dsamp(dl)%isg = G%HId(dl)%isg ; diag_cs%dsamp(dl)%ieg = G%HId(dl)%ieg
-    diag_cs%dsamp(dl)%jsg = G%HId(dl)%jsg ; diag_cs%dsamp(dl)%jeg = G%HId(dl)%jeg
-    diag_cs%dsamp(dl)%isgB = G%HId(dl)%isgB ; diag_cs%dsamp(dl)%iegB = G%HId(dl)%iegB
-    diag_cs%dsamp(dl)%jsgB = G%HId(dl)%jsgB ; diag_cs%dsamp(dl)%jegB = G%HId(dl)%jegB
-  enddo
+  !In this code design 
+  !diag_cs%num_diag_dsamp_levels is the number of downsampling levels requested in the parameters
+  !diag_cs%diag_dsamp_levels(dl) is the actual downsampling factor for each level, 
+  !which is used to as the division factor to define the axes for that level.
+  !Note that the downsampling axes and domains are created at initialization based on what is 
+  !requested in the parameter files (default is none) regardless of whether 
+  !any downsampled diagnostics are present in the diag_table.
+  !Are downsampled diagnostics requested? 
+  call get_param(param_file, mdl, 'NUM_DIAG_DOWNSAMP_LEV', diag_cs%num_diag_dsamp_levels, &
+                 'The number of diagnostic downsample levels to use. '//&
+                 'For each level, an entry in DIAG_DOWNSAMP_LEV must be provided.', &
+                 default=0)
+  if (diag_cs%num_diag_dsamp_levels > 0) then   
+    allocate(diag_cs%diag_dsamp_levels(diag_cs%num_diag_dsamp_levels))
+    call get_param(param_file, mdl, 'DIAG_DOWNSAMP_LEVS', diag_cs%diag_dsamp_levels, &
+                  'A comma separated list of diagnostic downsample levels to be used. ', &
+                  fail_if_missing=.true.)
+
+    allocate(diag_cs%dsamp(diag_cs%num_diag_dsamp_levels))
+    ! Initialize the global grid extents for all requested levels of diagnostics coarsening.
+    allocate(G%HId(diag_cs%num_diag_dsamp_levels))
+    !Allocate downsampling domains
+    allocate(G%Domain%mpp_domain_d(diag_cs%num_diag_dsamp_levels))
+    !Create and populated the downsampling domains and grids
+    do dl=1, diag_cs%num_diag_dsamp_levels
+      dlfac = diag_cs%diag_dsamp_levels(dl)
+      !Create the auxiliary mpp_domain for this level of downsampled diagnostics
+      !Downsample diagnostics calculations do not need halos. 
+      call clone_MOM_domain(G%Domain, G%Domain%mpp_domain_d(dl), coarsen=dlfac, halo_size=0, &
+                            domain_name="MOM_domain_d" // char(48+dlfac))
+
+      !Set the grid extents for this level of downsampling.
+      call get_domain_extent(G%Domain, G%HId(dl)%isc, G%HId(dl)%iec, G%HId(dl)%jsc, G%HId(dl)%jec, &
+                             G%HId(dl)%isd, G%HId(dl)%ied, G%HId(dl)%jsd, G%HId(dl)%jed, &
+                             G%HId(dl)%isg, G%HId(dl)%ieg, G%HId(dl)%jsg, G%HId(dl)%jeg, &
+                             coarsen=dl)
+
+      ! Set array sizes for fields that are discretized at tracer cell boundaries.
+      G%HId(dl)%IscB = G%HId(dl)%isc ; G%HId(dl)%JscB = G%HId(dl)%jsc
+      G%HId(dl)%IsdB = G%HId(dl)%isd ; G%HId(dl)%JsdB = G%HId(dl)%jsd
+      G%HId(dl)%IsgB = G%HId(dl)%isg ; G%HId(dl)%JsgB = G%HId(dl)%jsg
+      if (G%symmetric) then
+        G%HId(dl)%IscB = G%HId(dl)%isc-1 ; G%HId(dl)%JscB = G%HId(dl)%jsc-1
+        G%HId(dl)%IsdB = G%HId(dl)%isd-1 ; G%HId(dl)%JsdB = G%HId(dl)%jsd-1
+        G%HId(dl)%IsgB = G%HId(dl)%isg-1 ; G%HId(dl)%JsgB = G%HId(dl)%jsg-1
+      endif
+      G%HId(dl)%IecB = G%HId(dl)%iec ; G%HId(dl)%JecB = G%HId(dl)%jec
+      G%HId(dl)%IedB = G%HId(dl)%ied ; G%HId(dl)%JedB = G%HId(dl)%jed
+      G%HId(dl)%IegB = G%HId(dl)%ieg ; G%HId(dl)%JegB = G%HId(dl)%jeg
+
+      !Downsample indices for diagnostics that are on a coarser grid than the model grid.
+      diag_cs%dsamp(dl)%isc = G%HId(dl)%isc - (G%HId(dl)%isd-1) ; diag_cs%dsamp(dl)%iec = G%HId(dl)%iec - (G%HId(dl)%isd-1)
+      diag_cs%dsamp(dl)%jsc = G%HId(dl)%jsc - (G%HId(dl)%jsd-1) ; diag_cs%dsamp(dl)%jec = G%HId(dl)%jec - (G%HId(dl)%jsd-1)
+      diag_cs%dsamp(dl)%isd = G%HId(dl)%isd ; diag_cs%dsamp(dl)%ied = G%HId(dl)%ied
+      diag_cs%dsamp(dl)%jsd = G%HId(dl)%jsd ; diag_cs%dsamp(dl)%jed = G%HId(dl)%jed
+      diag_cs%dsamp(dl)%isg = G%HId(dl)%isg ; diag_cs%dsamp(dl)%ieg = G%HId(dl)%ieg
+      diag_cs%dsamp(dl)%jsg = G%HId(dl)%jsg ; diag_cs%dsamp(dl)%jeg = G%HId(dl)%jeg
+      diag_cs%dsamp(dl)%isgB = G%HId(dl)%isgB ; diag_cs%dsamp(dl)%iegB = G%HId(dl)%iegB
+      diag_cs%dsamp(dl)%jsgB = G%HId(dl)%jsgB ; diag_cs%dsamp(dl)%jegB = G%HId(dl)%jegB
+    enddo
+  endif 
   ! Initialze available diagnostic log file
   if (is_root_pe() .and. (diag_CS%available_diag_doc_unit < 0)) then
     write(this_pe,'(i6.6)') PE_here()
@@ -3892,7 +3956,7 @@ subroutine diag_mediator_end(time, diag_CS, end_diag_manager)
   if (associated(diag_cs%mask3dBi))  deallocate(diag_cs%mask3dBi)
   if (associated(diag_cs%mask3dCui)) deallocate(diag_cs%mask3dCui)
   if (associated(diag_cs%mask3dCvi)) deallocate(diag_cs%mask3dCvi)
-  do dl=2,MAX_DSAMP_LEV
+  do dl=1, diag_cs%num_diag_dsamp_levels
     if (associated(diag_cs%dsamp(dl)%mask2dT))   deallocate(diag_cs%dsamp(dl)%mask2dT)
     if (associated(diag_cs%dsamp(dl)%mask2dBu))  deallocate(diag_cs%dsamp(dl)%mask2dBu)
     if (associated(diag_cs%dsamp(dl)%mask2dCu))  deallocate(diag_cs%dsamp(dl)%mask2dCu)
@@ -3953,7 +4017,7 @@ subroutine diag_mediator_end(time, diag_CS, end_diag_manager)
     deallocate(diag_cs%remap_axesCvi)
   endif
 
-  do dl=2,MAX_DSAMP_LEV
+  do dl=1, diag_cs%num_diag_dsamp_levels
     if (allocated(diag_cs%dsamp(dl)%remap_axesTL)) &
       deallocate(diag_cs%dsamp(dl)%remap_axesTL)
     if (allocated(diag_cs%dsamp(dl)%remap_axesTi)) &
@@ -4226,7 +4290,7 @@ subroutine downsample_diag_masks_set(G, nz, diag_cs)
   type(diag_ctrl),               pointer    :: diag_cs !< A pointer to a type with many variables
                                                        !! used for diagnostics
   ! Local variables
-  integer :: k, dl
+  integer :: k, dl, dlfac
 
 !print*,'original c extents ',G%isc,G%iec,G%jsc,G%jec
 !print*,'original c extents ',G%iscb,G%iecb,G%jscb,G%jecb
@@ -4242,15 +4306,16 @@ subroutine downsample_diag_masks_set(G, nz, diag_cs)
 ! original dB-sym extents       0          56           0          56
 ! coarse   d extents            1          28           1          28
 
-  do dl=2,MAX_DSAMP_LEV
+  do dl=1, diag_cs%num_diag_dsamp_levels
+    dlfac = diag_cs%diag_dsamp_levels(dl) !Actual downsampling factor for this level
     ! 2d mask
-    call downsample_mask(G%mask2dT, diag_cs%dsamp(dl)%mask2dT,  dl, G%isc, G%jsc, G%isd, G%jsd, &
+    call downsample_mask(G%mask2dT, diag_cs%dsamp(dl)%mask2dT,  dlfac, G%isc, G%jsc, G%isd, G%jsd, &
             G%HId(dl)%isc, G%HId(dl)%iec, G%HId(dl)%jsc, G%HId(dl)%jec, G%HId(dl)%isd, G%HId(dl)%ied, G%HId(dl)%jsd, G%HId(dl)%jed)
     call downsample_mask(G%mask2dBu, diag_cs%dsamp(dl)%mask2dBu, dl,G%IscB, G%JscB, G%IsdB, G%JsdB, &
             G%HId(dl)%IscB,G%HId(dl)%IecB, G%HId(dl)%JscB,G%HId(dl)%JecB,G%HId(dl)%IsdB,G%HId(dl)%IedB,G%HId(dl)%JsdB,G%HId(dl)%JedB)
-    call downsample_mask(G%mask2dCu, diag_cs%dsamp(dl)%mask2dCu, dl, G%IscB, G%jsc, G%IsdB, G%jsd, &
+    call downsample_mask(G%mask2dCu, diag_cs%dsamp(dl)%mask2dCu, dlfac, G%IscB, G%jsc, G%IsdB, G%jsd, &
             G%HId(dl)%IscB,G%HId(dl)%IecB, G%HId(dl)%jsc, G%HId(dl)%jec,G%HId(dl)%IsdB,G%HId(dl)%IedB,G%HId(dl)%jsd, G%HId(dl)%jed)
-    call downsample_mask(G%mask2dCv, diag_cs%dsamp(dl)%mask2dCv, dl,G %isc ,G%JscB, G%isd, G%JsdB, &
+    call downsample_mask(G%mask2dCv, diag_cs%dsamp(dl)%mask2dCv, dlfac,G %isc ,G%JscB, G%isd, G%JsdB, &
             G%HId(dl)%isc ,G%HId(dl)%iec, G%HId(dl)%JscB,G%HId(dl)%JecB,G%HId(dl)%isd ,G%HId(dl)%ied, G%HId(dl)%JsdB,G%HId(dl)%JedB)
     ! 3d native masks are needed by diag_manager but the native variables
     ! can only be masked 2d - for ocean points, all layers exists.
@@ -4282,7 +4347,7 @@ end subroutine downsample_diag_masks_set
 subroutine downsample_diag_indices_get(fo1, fo2, dl, diag_cs, isv, iev, jsv, jev)
   integer,           intent(in)  :: fo1     !< The size of the original diag field in x on data domain including halos
   integer,           intent(in)  :: fo2     !< The size of the original diag field in y on data domain including halos
-  integer,           intent(in)  :: dl      !< Integer downsample level
+  integer,           intent(in)  :: dl      !< Index of downsample level
   type(diag_ctrl),   intent(in)  :: diag_CS !< Structure used to regulate diagnostic output
   integer,           intent(out) :: isv     !< i-start index for diagnostics
   integer,           intent(out) :: iev     !< i-end index for diagnostics
@@ -4299,9 +4364,11 @@ subroutine downsample_diag_indices_get(fo1, fo2, dl, diag_cs, isv, iev, jsv, jev
   ! check that this assumption is true is only relevant if there are in fact downsampled diagnostics,
   ! which is why it occurs during the first call to this routine instead of during initialization.
   if (first_check) then
-    if (mod(diag_cs%ie-diag_cs%is+1, dl) /= 0 .OR. mod(diag_cs%je-diag_cs%js+1, dl) /= 0) then
+    if (mod(diag_cs%ie-diag_cs%is+1, diag_cs%diag_dsamp_levels(dl)) /= 0 .OR. &
+        mod(diag_cs%je-diag_cs%js+1, diag_cs%diag_dsamp_levels(dl)) /= 0) then
       write (mesg,*) "Non-commensurate downsampled domain is not supported. "//&
-             "Please choose a layout such that NIGLOBAL/Layout_X and NJGLOBAL/Layout_Y are both divisible by dl=",dl,&
+             "Please choose a layout such that NIGLOBAL/Layout_X and NJGLOBAL/Layout_Y are both divisible by dl=", &
+             diag_cs%diag_dsamp_levels(dl),&
              " Current domain extents: ", diag_cs%is,diag_cs%ie, diag_cs%js,diag_cs%je
       call MOM_error(FATAL,"downsample_diag_indices_get: "//trim(mesg))
     endif
@@ -4350,7 +4417,7 @@ subroutine downsample_diag_field_3d(locfield, locfield_dsamp, dl, diag_cs, diag,
   real, dimension(:,:,:), allocatable, intent(inout) :: locfield_dsamp !< Output (downsampled) array [A ~> a]
   type(diag_ctrl),   intent(in) :: diag_CS !< Structure used to regulate diagnostic output
   type(diag_type),   intent(in) :: diag    !< A structure describing the diagnostic to post
-  integer, intent(in) :: dl                !< Level of down sampling
+  integer, intent(in) :: dl                !< Index of Level of down sampling
   integer, intent(inout) :: isv            !< i-start index for diagnostics
   integer, intent(inout) :: iev            !< i-end index for diagnostics
   integer, intent(inout) :: jsv            !< j-start index for diagnostics
@@ -4376,9 +4443,8 @@ subroutine downsample_diag_field_3d(locfield, locfield_dsamp, dl, diag_cs, diag,
   else
     call MOM_error(FATAL, "downsample_diag_field_3d: Cannot downsample without a mask!!! ")
   endif
-
-  call downsample_field(locfield, locfield_dsamp, dl, diag%xyz_method, locmask, diag_cs, diag, &
-                        isv_o, jsv_o, isv, iev, jsv, jev)
+  call downsample_field(locfield, locfield_dsamp, diag_cs%diag_dsamp_levels(dl), diag%xyz_method, &
+                        locmask, diag_cs, diag, isv_o, jsv_o, isv, iev, jsv, jev)
 
 end subroutine downsample_diag_field_3d
 
@@ -4390,7 +4456,7 @@ subroutine downsample_diag_field_2d(locfield, locfield_dsamp, dl, diag_cs, diag,
   real, dimension(:,:), allocatable, intent(inout) :: locfield_dsamp !< Output (downsampled) array [A ~> a]
   type(diag_ctrl),   intent(in) :: diag_CS !< Structure used to regulate diagnostic output
   type(diag_type),   intent(in) :: diag    !< A structure describing the diagnostic to post
-  integer, intent(in) :: dl                !< Level of down sampling
+  integer, intent(in) :: dl                !< Index of Level of down sampling
   integer, intent(inout) :: isv            !< i-start index for diagnostics
   integer, intent(inout) :: iev            !< i-end index for diagnostics
   integer, intent(inout) :: jsv            !< j-start index for diagnostics
@@ -4417,8 +4483,8 @@ subroutine downsample_diag_field_2d(locfield, locfield_dsamp, dl, diag_cs, diag,
     call MOM_error(FATAL, "downsample_diag_field_2d: Cannot downsample without a mask!!! ")
   endif
 
-  call downsample_field(locfield, locfield_dsamp, dl, diag%xyz_method, locmask, diag_cs,diag, &
-                        isv_o, jsv_o, isv, iev, jsv, jev)
+  call downsample_field(locfield, locfield_dsamp, diag_cs%diag_dsamp_levels(dl), diag%xyz_method, &
+                        locmask, diag_cs,diag, isv_o, jsv_o, isv, iev, jsv, jev)
 
 end subroutine downsample_diag_field_2d
 
