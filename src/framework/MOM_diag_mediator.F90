@@ -4424,45 +4424,7 @@ subroutine downsample_diag_indices_get(fo1, fo2, dl, diag_cs, isv, iev, jsv, jev
     call MOM_error(FATAL,"downsample_diag_indices_get: "//trim(mesg))
   endif
 end subroutine downsample_diag_indices_get
-!Debug information about the shapes and indices of the diag field.
-!  print*, "i-shapes ",size(field,1), cszi, dszi, isv, iev
-!  print*, "j-shapes ",size(field,2), cszj, dszj, jsv, jev
-!  print*, "k-shapes ",size(field,3), ks, ke
-!field = uo
-! i-shapes           49          40          48           5          45
-! j-shapes           48          40          48           5          44
-! k-shapes           75           1          75
-!field = uo_d2
-! i-shapes           49          40          48           3          23
-! j-shapes           48          40          48           3          22
-! k-shapes           75           1          75
-!  print*, "i-shapes ",fo1,f1, cszi, dszi, isv, iev
-!  print*, "j-shapes ",fo2,f2, cszj, dszj, jsv, jev
-! i-shapes           49          25          20          24           3     23
-! j-shapes           48          24          20          24           3     22
 
-!field = uo_d4
-! i-shapes           49          40          48           2          12                                                  
-! j-shapes           48          40          48           2          11                                                  
-! k-shapes           75           1          75                                                                          
-!Debug information about the shapes and indices of the diag field.
-!  print*, "i-shapes ",fo1,f1, cszi, dszi, isv, iev
-!  print*, "j-shapes ",fo2,f2, cszj, dszj, jsv, jev
-! i-shapes           49          13          10          12           2      12                                                                                                            
-! j-shapes           48          12          10          12           2      11                                                                                                            
-!Debug information about the shapes and indices of the diag field.
-!forrtl: severe (408): fort: (2): Subscript #3 of the array BUFFER has value 36 which is greater than the upper bound of 35
-!non-symmetric mode
-! i-shapes           48          12          10          12           2      11                                                                                                            
-! j-shapes           48          12          10          12           2      11   
-!forrtl: severe (408): fort: (2): Subscript #3 of the array BUFFER has value 36 which is greater than the upper bound of 35
-!print*,'Debug: posting diag with mask in post_data_3d_low ', size(locfield,1), size(locfield,2), size(locfield,3), size(locmask,1), size(locmask,2), size(locmask,3)
-!print*,'Debug: isv,iev,jsv,jev,ks,ke ', isv, iev, jsv, jev, ks, ke
-!Debug: posting diag with mask in post_data_3d_low         13               12                75          13          12          75                                                                        
-! Debug: isv,iev,jsv,jev,ks,ke                         2          12   2          11     1          75
-!> This subroutine allocates and computes a downsampled array from an input array
-!! It also determines the diagnostics-compute indices for the downsampled array
-!! 3d interface
 subroutine downsample_diag_field_3d(locfield, locfield_dsamp, dl, diag_cs, diag, isv, iev, jsv, jev, mask)
   real, dimension(:,:,:), pointer :: locfield  !< Input array pointer in arbitrary units [A ~> a]
   real, dimension(:,:,:), allocatable, intent(inout) :: locfield_dsamp !< Output (downsampled) array [A ~> a]
