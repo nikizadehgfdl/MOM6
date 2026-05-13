@@ -237,7 +237,7 @@ subroutine MOM_grid_init(G, param_file, US, HI, global_indexing, bathymetry_at_v
   integer :: isd, ied, jsd, jed
   integer :: IsdB, IedB, JsdB, JedB
   integer :: ied_max, jed_max
-  integer :: niblock, njblock, nihalo, njhalo, nblocks, n, i, j, dl
+  integer :: niblock, njblock, nihalo, njhalo, nblocks, n, i, j
   logical :: local_indexing  ! If false use global index values instead of having
                              ! the data domain on each processor start at 1.
   ! This include declares and sets the variable "version".

@@ -1371,7 +1371,6 @@ subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, l
   integer, dimension(4) :: global_indices ! The lower and upper global i- and j-index bounds
   integer :: X_FLAGS  ! A combination of integers encoding the x-direction grid connectivity.
   integer :: Y_FLAGS  ! A combination of integers encoding the y-direction grid connectivity.
-  integer :: dl
   character(len=200) :: mesg    ! A string for use in error messages
   logical :: mask_table_exists  ! Mask_table is present and the file it points to exists
 
@@ -1454,7 +1453,6 @@ subroutine deallocate_MOM_domain(MOM_domain, cursory)
   logical,  optional, intent(in) :: cursory    !< If true do not deallocate fields associated
                                                !! with the underlying infrastructure
   logical :: invasive  ! If true, deallocate fields associated with the underlying infrastructure
-  integer :: dl
 
   invasive = .true. ; if (present(cursory)) invasive = .not.cursory
 
@@ -1561,7 +1559,7 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain
   integer, dimension(:), allocatable :: exnj ! The extents of the grid for each j-row of the layout.
                                              ! The sum of exni must equal MOM_dom%niglobal.
   integer :: qturns ! The number of quarter turns, restricted to the range of 0 to 3.
-  integer :: i, j, nl1, nl2, dl
+  integer :: i, j, nl1, nl2
   integer :: io_layout_in(2)
 
   qturns = 0

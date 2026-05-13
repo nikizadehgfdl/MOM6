@@ -25,7 +25,7 @@ use MOM_diag_remap,       only : horizontally_average_diag_field, diag_remap_get
 use MOM_diag_remap,       only : diag_remap_configure_axes, diag_remap_axes_configured
 use MOM_diag_remap,       only : diag_remap_diag_registration_closed, diag_remap_set_active
 use MOM_EOS,              only : EOS_type
-use MOM_error_handler,    only : MOM_error, NOTE, FATAL, WARNING, is_root_pe, assert, callTree_showQuery
+use MOM_error_handler,    only : MOM_error, FATAL, WARNING, is_root_pe, assert, callTree_showQuery
 use MOM_error_handler,    only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_file_parser,      only : get_param, log_version, param_file_type
 use MOM_grid,             only : ocean_grid_type
