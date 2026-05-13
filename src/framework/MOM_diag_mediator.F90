@@ -6,6 +6,7 @@
 !! interfaces with additional diagnostic capabilities.
 module MOM_diag_mediator
 
+use MOM_array_transform,  only : symmetric_sum
 use MOM_checksums,        only : chksum0, zchksum, hchksum, uchksum, vchksum, Bchksum
 use MOM_coms,             only : PE_here
 use MOM_cpu_clock,        only : cpu_clock_id, cpu_clock_begin, cpu_clock_end
@@ -24,7 +25,7 @@ use MOM_diag_remap,       only : horizontally_average_diag_field, diag_remap_get
 use MOM_diag_remap,       only : diag_remap_configure_axes, diag_remap_axes_configured
 use MOM_diag_remap,       only : diag_remap_diag_registration_closed, diag_remap_set_active
 use MOM_EOS,              only : EOS_type
-use MOM_error_handler,    only : MOM_error, FATAL, WARNING, is_root_pe, assert, callTree_showQuery
+use MOM_error_handler,    only : MOM_error, NOTE, FATAL, WARNING, is_root_pe, assert, callTree_showQuery
 use MOM_error_handler,    only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_file_parser,      only : get_param, log_version, param_file_type
 use MOM_grid,             only : ocean_grid_type
@@ -259,6 +260,7 @@ type, public :: diag_ctrl
   logical :: diag_as_chksum  !< If true, log chksums in a text file instead of posting diagnostics
   logical :: show_call_tree  !< Display the call tree while running. Set by VERBOSITY level.
   logical :: index_space_axes !< If true, diagnostic horizontal coordinates axes are in index space.
+  logical :: symmetric_downsample_sums !< If true, use rotationally symmetric sums when downsampling diagnostics.
 
   ! The following fields are used for the output of the data.
   ! These give the computational-domain sizes, and are relative to a start value
@@ -634,7 +636,6 @@ subroutine set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_n
                                                          ! [km] or [m] or [gridpoints].
 
 
-  id_zl = id_zl_native ; id_zi = id_zi_native
   ! Axes group for native downsampled diagnostics
   !Loop over the downsampling levels requested in parameters.
   do dl=1, diag_cs%num_diag_dsamp_levels
@@ -673,6 +674,8 @@ subroutine set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_n
     deallocate(gridLonT_dsamp, gridLatT_dsamp)
 
     ! Axis groupings for the model layers
+    id_zl = id_zl_native ; id_zi = id_zi_native !This should be inside the dl loop
+
     call define_axes_group_dsamp(diag_cs, (/ id_xh, id_yh, id_zL /), diag_cs%dsamp(dl)%axesTL, dl, &
             x_cell_method='mean', y_cell_method='mean', v_cell_method='mean', &
             is_h_point=.true., is_layer=.true., xyave_axes=diag_cs%axesZL)
@@ -1793,7 +1796,7 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
   ! but non-symmetric arrays are using a NE-grid indexing.  Send_data
   ! actually only uses the difference between ie and is to determine
   ! the output data size and assumes that halos are symmetric.
-  isv = diag_cs%is ; iev = diag_cs%ie ; jsv = diag_cs%js ; jev = diag_cs%je
+  !isv = diag_cs%is ; iev = diag_cs%ie ; jsv = diag_cs%js ; jev = diag_cs%je
 
   cszi = (diag_cs%ie-diag_cs%is) +1 ; dszi = (diag_cs%ied-diag_cs%isd) +1
   cszj = (diag_cs%je-diag_cs%js) +1 ; dszj = (diag_cs%jed-diag_cs%jsd) +1
@@ -1909,19 +1912,19 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
       if (is_stat) then
         if (associated(locmask)) then
           used = send_data_infra(diag%fms_diag_id, locfield, &
-                         is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, rmask=locmask)
+                         is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, ks_in=ks, ke_in=ke, rmask=locmask)
         else
           used = send_data_infra(diag%fms_diag_id, locfield, &
-                           is_in=isv, ie_in=iev, js_in=jsv, je_in=jev)
+                           is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, ks_in=ks, ke_in=ke)
         endif
       elseif (diag_cs%ave_enabled) then
         if (associated(locmask)) then
           used = send_data_infra(diag%fms_diag_id, locfield, &
-                           is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, &
+                           is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, ks_in=ks, ke_in=ke, &
                            time=diag_cs%time_end, weight=diag_cs%time_int, rmask=locmask)
         else
           used = send_data_infra(diag%fms_diag_id, locfield, &
-                           is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, &
+                           is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, ks_in=ks, ke_in=ke, &
                            time=diag_cs%time_end, weight=diag_cs%time_int)
         endif
       endif
@@ -2843,7 +2846,7 @@ subroutine add_xyz_method(diag, axes, x_cell_method, y_cell_method, v_cell_metho
 
   mstr = diag%axes%v_cell_method
   if (present(v_extensive)) then
-    if (present(v_cell_method)) call MOM_error(FATAL, "attach_cell_methods: " // &
+    if (present(v_cell_method)) call MOM_error(FATAL, "add_xyz_method: " // &
        'Vertical cell method was specified along with the vertically extensive flag.')
     if (v_extensive) then
       mstr='sum'
@@ -3489,8 +3492,12 @@ subroutine diag_mediator_init(G, GV, US, nz, param_file, diag_cs, doc_file_dir)
                  default=default_answer_date, do_not_log=.not.GV%Boussinesq)
   if (.not.GV%Boussinesq) remap_answer_date = max(remap_answer_date, 20230701)
   call get_param(param_file, mdl, 'USE_INDEX_DIAGNOSTIC_AXES', diag_cs%index_space_axes, &
-                 'If true, use a grid index coordinate convention for diagnostic axes. ',&
+                 'If true, use a grid index coordinate convention for diagnostic axes. ', &
                  default=.false.)
+  call get_param(param_file, mdl, 'SYMMETRIC_DOWNSAMPLE_SUMS', diag_cs%symmetric_downsample_sums, &
+                 'If true, use rotationally symmetric sums when downsampling diagnostics.', &
+                 default=.false.)
+
 
   dz_diag_needed = .false.
   if (diag_cs%num_diag_coords>0) then
@@ -3578,7 +3585,7 @@ subroutine diag_mediator_init(G, GV, US, nz, param_file, diag_cs, doc_file_dir)
       dlfac = diag_cs%diag_dsamp_levels(dl)
       !Create the auxiliary mpp_domain for this level of downsampled diagnostics
       !Downsample diagnostics calculations do not need halos. 
-      call clone_MOM_domain(G%Domain, G%Domain%mpp_domain_d(dl), coarsen=dlfac, halo_size=0, &
+      call clone_MOM_domain(G%Domain, G%Domain%mpp_domain_d(dl), coarsen=dlfac, & !halo_size=0, &
                             domain_name="MOM_domain_d" // char(48+dlfac))
 
       !Set the grid extents for this level of downsampling.
@@ -4354,7 +4361,7 @@ subroutine downsample_diag_indices_get(fo1, fo2, dl, diag_cs, isv, iev, jsv, jev
   integer,           intent(out) :: jsv     !< j-start index for diagnostics
   integer,           intent(out) :: jev     !< j-end index for diagnostics
   ! Local variables
-  integer :: dszi, cszi, dszj, cszj, f1, f2
+  integer :: dszi, cszi, dszj, cszj, f1, f2, dlfac
   character(len=500) :: mesg
   logical, save :: first_check = .true.
 
@@ -4363,52 +4370,96 @@ subroutine downsample_diag_indices_get(fo1, fo2, dl, diag_cs, isv, iev, jsv, jev
   ! avoids the need for halo updates or checks that the halo regions are up-to-date.  The following
   ! check that this assumption is true is only relevant if there are in fact downsampled diagnostics,
   ! which is why it occurs during the first call to this routine instead of during initialization.
+  dlfac = diag_cs%diag_dsamp_levels(dl) !Actual downsampling factor for this level
   if (first_check) then
-    if (mod(diag_cs%ie-diag_cs%is+1, diag_cs%diag_dsamp_levels(dl)) /= 0 .OR. &
-        mod(diag_cs%je-diag_cs%js+1, diag_cs%diag_dsamp_levels(dl)) /= 0) then
+    if (mod(diag_cs%ie-diag_cs%is+1, dlfac) /= 0 .OR. &
+        mod(diag_cs%je-diag_cs%js+1, dlfac) /= 0) then
       write (mesg,*) "Non-commensurate downsampled domain is not supported. "//&
-             "Please choose a layout such that NIGLOBAL/Layout_X and NJGLOBAL/Layout_Y are both divisible by dl=", &
-             diag_cs%diag_dsamp_levels(dl),&
+             "Please choose a layout such that NIGLOBAL/Layout_X and NJGLOBAL/Layout_Y are both divisible by dL=", &
+             dlfac,&
              " Current domain extents: ", diag_cs%is,diag_cs%ie, diag_cs%js,diag_cs%je
       call MOM_error(FATAL,"downsample_diag_indices_get: "//trim(mesg))
     endif
     first_check = .false.
   endif
 
-  !The diagnostics field is defined on the original (non-downsampled) data domain.
-  !The size of the original diag field in each direction is used to deduce the indices to be used for downsampled domain.
-  !The sizes of the original compute and data domains
-  cszi = diag_cs%ie-diag_cs%is +1 ; dszi = diag_cs%ied-diag_cs%isd +1
-  cszj = diag_cs%je-diag_cs%js +1 ; dszj = diag_cs%jed-diag_cs%jsd +1
+  cszi = diag_cs%dsamp(dl)%iec-diag_cs%dsamp(dl)%isc +1 ; dszi = diag_cs%dsamp(dl)%ied-diag_cs%dsamp(dl)%isd +1
+  cszj = diag_cs%dsamp(dl)%jec-diag_cs%dsamp(dl)%jsc +1 ; dszj = diag_cs%dsamp(dl)%jed-diag_cs%dsamp(dl)%jsd +1
+  !isv = diag_cs%dsamp(dl)%isc ; iev = diag_cs%dsamp(dl)%iec
+  !jsv = diag_cs%dsamp(dl)%jsc ; jev = diag_cs%dsamp(dl)%jec
 
-  if ( fo1 == dszi ) then
-    isv = diag_cs%dsamp(dl)%isc ; iev = diag_cs%dsamp(dl)%iec   ! field on Data domain, take compute domain indcies
-  elseif ( fo1 == dszi + 1 ) then
+  f1 = fo1/dlfac
+  f2 = fo2/dlfac
+  ! Correction for the symmetric case
+  if (diag_cs%G%symmetric) then
+    f1 = f1 + mod(fo1,dlfac)
+    f2 = f2 + mod(fo2,dlfac)
+  endif
+
+  ! Find the range of indices in the downsampled computational domain.
+  if ( f1 == dszi ) then
+    isv = diag_cs%dsamp(dl)%isc ; iev = diag_cs%dsamp(dl)%iec   ! Field on Data domain, take compute domain indices
+  elseif ( f1 == dszi + 1 ) then
     isv = diag_cs%dsamp(dl)%isc ; iev = diag_cs%dsamp(dl)%iec+1   ! Symmetric data domain
-  elseif ( fo1 == cszi) then
+  elseif ( f1 == cszi) then
     isv = 1 ; iev = (diag_cs%dsamp(dl)%iec-diag_cs%dsamp(dl)%isc) +1  ! Computational domain
-  elseif ( fo1 == cszi + 1 ) then
+  elseif ( f1 == cszi + 1 ) then
     isv = 1 ; iev = (diag_cs%dsamp(dl)%iec-diag_cs%dsamp(dl)%isc) +2  ! Symmetric computational domain
   else
-    write (mesg,*) " dl =",dl," fo1 =",fo1," peculiar size for diag field in i-direction\n"//&
+    write (mesg,*) " dl =",dl,",dL =",dlfac,",fo1 =",fo1," f1 =",f1," peculiar size for diag field in i-direction\n"//&
           "does not match one of ", cszi, cszi+1, dszi, dszi+1
     call MOM_error(FATAL,"downsample_diag_indices_get: "//trim(mesg))
   endif
-  if ( fo2 == dszj ) then
+  if ( f2 == dszj ) then
     jsv = diag_cs%dsamp(dl)%jsc ; jev = diag_cs%dsamp(dl)%jec     ! Data domain
-  elseif ( fo2 == dszj + 1 ) then
+  elseif ( f2 == dszj + 1 ) then
     jsv = diag_cs%dsamp(dl)%jsc ; jev = diag_cs%dsamp(dl)%jec+1   ! Symmetric data domain
-  elseif ( fo2 == cszj) then
+  elseif ( f2 == cszj) then
     jsv = 1 ; jev = (diag_cs%dsamp(dl)%jec-diag_cs%dsamp(dl)%jsc) +1  ! Computational domain
-  elseif ( fo2 == cszj + 1 ) then
+  elseif ( f2 == cszj + 1 ) then
     jsv = 1 ; jev = (diag_cs%dsamp(dl)%jec-diag_cs%dsamp(dl)%jsc) +2  ! Symmetric computational domain
   else
-    write (mesg,*) " dl =",dl," fo2 =",fo2," peculiar size for diag field in j-direction\n"//&
+    write (mesg,*) " dl =",dl,",dL =",dlfac,",fo2 =",fo2," f2 =",f2," peculiar size for diag field in j-direction\n"//&
           "does not match one of ", cszj, cszj+1, dszj, dszj+1
     call MOM_error(FATAL,"downsample_diag_indices_get: "//trim(mesg))
   endif
 end subroutine downsample_diag_indices_get
+!Debug information about the shapes and indices of the diag field.
+!  print*, "i-shapes ",size(field,1), cszi, dszi, isv, iev
+!  print*, "j-shapes ",size(field,2), cszj, dszj, jsv, jev
+!  print*, "k-shapes ",size(field,3), ks, ke
+!field = uo
+! i-shapes           49          40          48           5          45
+! j-shapes           48          40          48           5          44
+! k-shapes           75           1          75
+!field = uo_d2
+! i-shapes           49          40          48           3          23
+! j-shapes           48          40          48           3          22
+! k-shapes           75           1          75
+!  print*, "i-shapes ",fo1,f1, cszi, dszi, isv, iev
+!  print*, "j-shapes ",fo2,f2, cszj, dszj, jsv, jev
+! i-shapes           49          25          20          24           3     23
+! j-shapes           48          24          20          24           3     22
 
+!field = uo_d4
+! i-shapes           49          40          48           2          12                                                  
+! j-shapes           48          40          48           2          11                                                  
+! k-shapes           75           1          75                                                                          
+!Debug information about the shapes and indices of the diag field.
+!  print*, "i-shapes ",fo1,f1, cszi, dszi, isv, iev
+!  print*, "j-shapes ",fo2,f2, cszj, dszj, jsv, jev
+! i-shapes           49          13          10          12           2      12                                                                                                            
+! j-shapes           48          12          10          12           2      11                                                                                                            
+!Debug information about the shapes and indices of the diag field.
+!forrtl: severe (408): fort: (2): Subscript #3 of the array BUFFER has value 36 which is greater than the upper bound of 35
+!non-symmetric mode
+! i-shapes           48          12          10          12           2      11                                                                                                            
+! j-shapes           48          12          10          12           2      11   
+!forrtl: severe (408): fort: (2): Subscript #3 of the array BUFFER has value 36 which is greater than the upper bound of 35
+!print*,'Debug: posting diag with mask in post_data_3d_low ', size(locfield,1), size(locfield,2), size(locfield,3), size(locmask,1), size(locmask,2), size(locmask,3)
+!print*,'Debug: isv,iev,jsv,jev,ks,ke ', isv, iev, jsv, jev, ks, ke
+!Debug: posting diag with mask in post_data_3d_low         13               12                75          13          12          75                                                                        
+! Debug: isv,iev,jsv,jev,ks,ke                         2          12   2          11     1          75
 !> This subroutine allocates and computes a downsampled array from an input array
 !! It also determines the diagnostics-compute indices for the downsampled array
 !! 3d interface
@@ -4525,11 +4576,11 @@ end subroutine downsample_diag_field_2d
 !> This subroutine allocates and computes a down sampled 3d array given an input array
 !! The down sample method is based on the "cell_methods" for the diagnostics as explained
 !! in the above table
-subroutine downsample_field_3d(field_in, field_out, dl, method, mask, diag_cs, diag, &
+subroutine downsample_field_3d(field_in, field_out, dL, method, mask, diag_cs, diag, &
                                isv_o, jsv_o, isv_d, iev_d, jsv_d, jev_d)
   real, dimension(:,:,:), pointer :: field_in      !< Original field to be downsampled in arbitrary units [A ~> a]
   real, dimension(:,:,:), allocatable :: field_out !< Downsampled field in the same arbitrary units [A ~> a]
-  integer, intent(in) :: dl                !< Level of down sampling
+  integer, intent(in) :: dL                !< Level of down sampling
   integer,  intent(in) :: method           !< Sampling method
   real,  dimension(:,:,:), pointer :: mask !< Mask for field [nondim]
   type(diag_ctrl), intent(in) :: diag_CS   !< Structure used to regulate diagnostic output
@@ -4540,10 +4591,21 @@ subroutine downsample_field_3d(field_in, field_out, dl, method, mask, diag_cs, d
   integer, intent(in) :: iev_d             !< i-end index of down sampled data
   integer, intent(in) :: jsv_d             !< j-start index of down sampled data
   integer, intent(in) :: jev_d             !< j-end index of down sampled data
+
   ! Local variables
   character(len=240) :: mesg
-  integer :: i, j, ii, jj, i0, j0, f1, f2, f_in1, f_in2
-  integer :: k, ks, ke
+  integer :: i, j, k, i_dn, j_dn, ks, ke, i0, j0, f1, f2, f_in1, f_in2
+  integer :: ii, jj  ! The index locations on the full grid that contribute to the averages.
+  integer :: i0_off, j0_off  ! The starting point offsets between full array and reduced array
+                             ! indices when i or j is 0.
+  real :: wt(dL,dL) ! The nondimensional, area-, volume- or mass-based weight for an input
+                    ! value [nondim], [L2 ~> m2], [H L ~> m2 or kg m-1] or [H L2 ~> m3 or kg]
+  real :: wtd_field(dL,dL) ! The weighted field to sum, in [A ~> a], [A L2 ~> a m2],
+                    ! [A H L ~> a m2 or a kg m-1] or [A H L2 ~> a m3 or a kg]
+  real :: wt_1d(dL) ! The nondimensional, area-, volume- or mass-based weight for an input
+                    ! value [nondim], [L2 ~> m2], [H L ~> m2 or kg m-1] or [H L2 ~> m3 or kg]
+  real :: wtd_field_1d(dL) ! The weighted field to sum, in [A ~> a], [A L2 ~> a m2],
+                    ! [A H L ~> a m2 or a kg m-1] or [A H L2 ~> a m3 or a kg]
   real :: ave       ! The running sum of the average, in [A ~> a], [A L2 ~> a m2],
                     ! [A H L ~> a m2 or a kg m-1] or [A H L2 ~> a m3 or a kg]
   real :: weight    ! The nondimensional, area-, volume- or mass-based weight for an input
@@ -4553,117 +4615,117 @@ subroutine downsample_field_3d(field_in, field_out, dl, method, mask, diag_cs, d
   real :: eps_vol   ! A negligibly small volume or mass [H L2 ~> m3 or kg]
   real :: eps_area  ! A negligibly small area [L2 ~> m2]
   real :: eps_face  ! A negligibly small face area [H L ~> m2 or kg m-1]
+  logical :: naive  ! If true, use naive rotatially variant sums to reproduct previous answers.
 
   ks = 1 ; ke = size(field_in,3)
+
+  ! It would be better to use a max with eps_vol instead of adding it into the denominator.
   eps_face = 1.0e-20 * diag_cs%G%US%m_to_L * diag_cs%GV%m_to_H
   eps_area = 1.0e-20 * diag_cs%G%US%m_to_L**2
   eps_vol = 1.0e-20 * diag_cs%G%US%m_to_L**2 * diag_cs%GV%m_to_H
 
-  ! Allocate the down sampled field on the down sampled compute domain
-  allocate(field_out(isv_d:iev_d,jsv_d:jev_d,ks:ke))
+  naive = .not.diag_CS%symmetric_downsample_sums
+
+  ! Allocate the down sampled field on the down sampled data domain
+!  allocate(field_out(diag_cs%dsamp(dl)%isd:diag_cs%dsamp(dl)%ied,diag_cs%dsamp(dl)%jsd:diag_cs%dsamp(dl)%jed,ks:ke))
+!  allocate(field_out(1:size(field_in,1)/dl,1:size(field_in,2)/dl,ks:ke))
+  f_in1 = size(field_in, 1)
+  f_in2 = size(field_in, 2)
+  f1 = f_in1 / dL
+  f2 = f_in2 / dL
+  ! Correction for the symmetric case
+  if (diag_cs%G%symmetric) then
+    f1 = f1 + mod(f_in1, dL)
+    f2 = f2 + mod(f_in2, dL)
+  endif
+  allocate(field_out(1:f1,1:f2,ks:ke))
+
+  ! These are the starting point offsets between full array and reduced array indices when i or j is 0.
+  i0_off = (isv_o-1) - dL*isv_d
+  j0_off = (jsv_o-1) - dL*jsv_d
 
   ! Fill the down sampled field on the down sampled diagnostics (almost always compute) domain
-  !### The averaging used here is not rotationally invariant.
-  !  Also, it would be better to use a max with eps_vol instead of adding it in the denominator.
   if (method == MMM) then
     do k=ks,ke ; do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      total_weight = 0.0
-      do jj=j0,j0+dl-1 ; do ii=i0,i0+dl-1
-        weight = mask(ii,jj,k) * diag_cs%G%areaT(ii,jj) * diag_cs%h(ii,jj,k)
-        total_weight = total_weight + weight
-        ave = ave+field_in(ii,jj,k) * weight
+      do j_dn=1,dL ; do i_dn=1,dL
+        ! ii and jj are the index locations on the full grid that contribute to the averages.
+        jj = j_dn + (dL*j + j0_off) ; ii = i_dn + (dL*i + i0_off)
+        wt(i_dn,j_dn) = mask(ii,jj,k) * diag_cs%G%areaT(ii,jj) * diag_cs%h(ii,jj,k)
+        wtd_field(i_dn,j_dn) = field_in(ii,jj,k) * wt(i_dn,j_dn)
       enddo ; enddo
-      field_out(i,j,k)  = ave / (total_weight + eps_vol)  ! Eps_vol avoids division by 0.
+      field_out(i,j,k) = square_sum(wtd_field(1:dL,1:dL), dL, naive) / &
+                        (square_sum(wt(1:dL,1:dL), dL, naive) + eps_vol) ! Eps_vol avoids division by 0.
     enddo ; enddo ; enddo
   elseif (method == SSS) then   ! e.g., volcello
     do k=ks,ke ; do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      do jj=j0,j0+dl-1 ; do ii=i0,i0+dl-1
-        weight = mask(ii,jj,k)
-        ave = ave+field_in(ii,jj,k)*weight
+      do j_dn=1,dL ; do i_dn=1,dL
+        jj = j_dn + (dL*j + j0_off) ; ii = i_dn + (dL*i + i0_off)
+        wtd_field(i_dn,j_dn) = field_in(ii,jj,k) * mask(ii,jj,k)
       enddo ; enddo
-      field_out(i,j,k)  = ave ! This is a masked sum, and total_weight = 1.
+      field_out(i,j,k)  = square_sum(wtd_field(1:dL,1:dL), dL, naive) ! This is a masked sum.
     enddo ; enddo ; enddo
   elseif (method == MMP .or. method == MMS) then   ! e.g., T_advection_xy
     do k=ks,ke ; do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      total_weight = 0.0
-      do jj=j0,j0+dl-1 ; do ii=i0,i0+dl-1
-        weight = mask(ii,jj,k) * diag_cs%G%areaT(ii,jj)
-        total_weight = total_weight + weight
-        ave = ave+field_in(ii,jj,k) * weight
+      do j_dn=1,dL ; do i_dn=1,dL
+        ! ii and jj are the index locations on the full grid that contribute to the averages.
+        jj = j_dn + (dL*j + j0_off) ; ii = i_dn + (dL*i + i0_off)
+        wt(i_dn,j_dn) = mask(ii,jj,k) * diag_cs%G%areaT(ii,jj)
+        wtd_field(i_dn,j_dn) = field_in(ii,jj,k) * wt(i_dn,j_dn)
       enddo ; enddo
-      field_out(i,j,k)  = ave / (total_weight + eps_area)  ! Eps_area avoids division by 0.
+      field_out(i,j,k) = square_sum(wtd_field(1:dL,1:dL), dL, naive) / &
+                        (square_sum(wt(1:dL,1:dL), dL, naive) + eps_area) ! Eps_area avoids division by 0.
     enddo ; enddo ; enddo
   elseif (method == PMM) then
     do k=ks,ke ; do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      total_weight = 0.0
-      ii=i0
-      do jj=j0,j0+dl-1
-        weight = mask(ii,jj,k) * diag_cs%G%dyCu(ii,jj) * diag_cs%h(ii,jj,k)
-        total_weight = total_weight + weight
-        ave = ave+field_in(ii,jj,k) * weight
+      II = dL*I + I0_off + (dL-1)
+      do j_dn=1,dL
+        jj = j_dn + (dL*j + j0_off)
+        !### The thickness here is offset by have a grid point from the rest of the expression.
+        wt_1d(j_dn) = mask(II,jj,k) * diag_cs%G%dyCu(II,jj) * diag_cs%h(ii,jj,k)
+        wtd_field_1d(j_dn) = field_in(II,jj,k) * wt_1d(j_dn)
       enddo
-      field_out(i,j,k)  = ave / (total_weight + eps_face)  ! Eps_face avoids division by 0.
+      field_out(I,j,k)  = sum_1d(wtd_field_1d(1:dL), dL) / &
+                         (sum_1d(wt_1d(1:dL), dL) + eps_face)  ! Eps_face avoids division by 0.
     enddo ; enddo ; enddo
   elseif (method == PSS) then    ! e.g. umo
     do k=ks,ke ; do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      ii=i0
-      do jj=j0,j0+dl-1
-        weight = mask(ii,jj,k)
-        ave = ave+field_in(ii,jj,k)*weight
+      II = dL*I + I0_off + (dL-1)
+      do j_dn=1,dL
+        jj = j_dn + (dL*j + j0_off)
+        wtd_field_1d(j_dn) = field_in(II,jj,k) * mask(II,jj,k)
       enddo
-      field_out(i,j,k)  = ave   ! This is a masked sum, and total_weight = 1.
+      field_out(I,j,k) = sum_1d(wtd_field_1d(1:dL), dL)   ! This is a masked sum.
     enddo ; enddo ; enddo
   elseif (method == SPS) then   ! e.g. vmo
-    do k=ks,ke ; do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      jj=j0
-      do ii=i0,i0+dl-1
-        weight = mask(ii,jj,k)
-        ave = ave+field_in(ii,jj,k)*weight
+    do k=ks,ke ; do J=jsv_d,jev_d ; do i=isv_d,iev_d
+      JJ = dL*J + J0_off + (dL-1)
+      do i_dn=1,dL
+        ii = i_dn + (dL*i + i0_off)
+        wtd_field_1d(i_dn) = field_in(ii,JJ,k) * mask(ii,JJ,k)
       enddo
-      field_out(i,j,k)  = ave  ! This is a masked sum, and total_weight = 1.
+      field_out(i,J,k) = sum_1d(wtd_field_1d(1:dL), dL)   ! This is a masked sum.
     enddo ; enddo ; enddo
   elseif (method == MPM) then
-    do k=ks,ke ; do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      total_weight = 0.0
-      jj=j0
-      do ii=i0,i0+dl-1
-        weight = mask(ii,jj,k) * diag_cs%G%dxCv(ii,jj) * diag_cs%h(ii,jj,k)
-        total_weight = total_weight + weight
-        ave = ave+field_in(ii,jj,k) * weight
+    do k=ks,ke ; do J=jsv_d,jev_d ; do i=isv_d,iev_d
+      JJ = dL*J + J0_off + (dL-1)
+      do i_dn=1,dL
+        ii = i_dn + (dL*i + i0_off)
+        !### The thickness here is offset by have a grid point from the rest of the expression.
+        wt_1d(i_dn) = mask(ii,JJ,k) * diag_cs%G%dxCv(ii,JJ) * diag_cs%h(ii,jj,k)
+        wtd_field_1d(i_dn) = field_in(ii,JJ,k) * wt_1d(i_dn)
       enddo
-      field_out(i,j,k)  = ave / (total_weight + eps_face)  ! Eps_face avoids division by 0.
+      field_out(i,J,k)  = sum_1d(wtd_field_1d(1:dL), dL) / &
+                         (sum_1d(wt_1d(1:dL), dL) + eps_face)  ! Eps_face avoids division by 0.
     enddo ; enddo ; enddo
   elseif (method == MSK) then ! The input field is a mask, so subsample it instead of averaging.
     field_out(:,:,:) = 0.0
     do k=ks,ke ; do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
       ave = 0.0
-      do jj=j0,j0+dl-1 ; do ii=i0,i0+dl-1
-        ave = ave+field_in(ii,jj,k)
+      do j_dn=1,dL ; do i_dn=1,dL
+        jj = j_dn + (dL*j + j0_off) ; ii = i_dn + (dL*i + i0_off)
+        ave = ave + field_in(ii,jj,k)
       enddo ; enddo
-      if (ave > 0.0) field_out(i,j,k)=1.0
+      if (ave > 0.0) field_out(i,j,k) = 1.0
     enddo ; enddo ; enddo
   else
     write (mesg,*) " unknown sampling method: ",method
@@ -4692,105 +4754,120 @@ subroutine downsample_field_2d(field_in, field_out, dl, method, mask, diag_cs, d
   integer, intent(in) :: jev_d             !< j-end index of down sampled data
   ! Local variables
   character(len=240) :: mesg
-  integer :: i, j, ii, jj, i0, j0, f1, f2, f_in1, f_in2
+  integer :: i, j, i_dn, j_dn, i0, j0, f1, f2, f_in1, f_in2
+  integer :: ii, jj  ! The index locations on the full grid that contribute to the averages.
+  integer :: i0_off, j0_off  ! The starting point offsets between full array and reduced array
+                             ! indices when i or j is 0.
+  real :: wt(dL,dL) ! The nondimensional, area-, volume- or mass-based weight for an input
+                    ! value [nondim], [L2 ~> m2], [H L ~> m2 or kg m-1] or [H L2 ~> m3 or kg]
+  real :: wtd_field(dL,dL) ! The weighted field to sum, in [A ~> a], [A L2 ~> a m2],
+                    ! [A H L ~> a m2 or a kg m-1] or [A H L2 ~> a m3 or a kg]
+  real :: wt_1d(dL) ! The nondimensional, area-, volume- or mass-based weight for an input
+                    ! value [nondim], [L2 ~> m2], [H L ~> m2 or kg m-1] or [H L2 ~> m3 or kg]
+  real :: wtd_field_1d(dL) ! The weighted field to sum, in [A ~> a], [A L2 ~> a m2],
+                    ! [A H L ~> a m2 or a kg m-1] or [A H L2 ~> a m3 or a kg]
   real :: ave       ! The running sum of the average, in [A ~> a] or [A L2 ~> a m2]
   real :: weight    ! The nondimensional or area-weighted weight for an input value [nondim] or [L2 ~> m2]
   real :: total_weight ! The sum of weights contributing to a point [nondim] or [L2 ~> m2]
   real :: eps_area  ! A negligibly small area [L2 ~> m2]
   real :: eps_len   ! A negligibly small horizontal length [L ~> m]
+  logical :: naive  ! If true, use naive rotatially variant sums to reproduct previous answers.
 
   eps_len = 1.0e-20 * diag_cs%G%US%m_to_L
   eps_area = 1.0e-20 * diag_cs%G%US%m_to_L**2
 
-  ! Allocate the down sampled field on the down sampled compute domain
-  allocate(field_out(isv_d:iev_d,jsv_d:jev_d))
+  naive = .not.diag_CS%symmetric_downsample_sums
+
+  ! Allocate the down sampled field on the down sampled data domain
+!  allocate(field_out(diag_cs%dsamp(dl)%isd:diag_cs%dsamp(dl)%ied,diag_cs%dsamp(dl)%jsd:diag_cs%dsamp(dl)%jed))
+!  allocate(field_out(1:size(field_in,1)/dl,1:size(field_in,2)/dl))
+  ! Fill the down sampled field on the down sampled diagnostics (almost always compute) domain
+  f_in1 = size(field_in,1)
+  f_in2 = size(field_in,2)
+  f1 = f_in1/dl
+  f2 = f_in2/dl
+  ! Correction for the symmetric case
+  if (diag_cs%G%symmetric) then
+    f1 = f1 + mod(f_in1,dl)
+    f2 = f2 + mod(f_in2,dl)
+  endif
+  allocate(field_out(1:f1,1:f2))
+
+  ! These are the starting point offsets between full array and reduced array indices when i or j is 0.
+  i0_off = (isv_o-1) - dL*isv_d
+  j0_off = (jsv_o-1) - dL*jsv_d
 
   if (method == MMP) then
     do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      total_weight = 0.0
-      do jj=j0,j0+dl-1 ; do ii=i0,i0+dl-1
-        weight = mask(ii,jj)*diag_cs%G%areaT(ii,jj)
-        total_weight = total_weight + weight
-        ave = ave+field_in(ii,jj) * weight
+      do j_dn=1,dL ; do i_dn=1,dL
+        ! ii and jj are the index locations on the full grid that contribute to the averages.
+        jj = j_dn + (dL*j + j0_off) ; ii = i_dn + (dL*i + i0_off)
+        wt(i_dn,j_dn) = mask(ii,jj) * diag_cs%G%areaT(ii,jj)
+        wtd_field(i_dn,j_dn) = field_in(ii,jj) * wt(i_dn,j_dn)
       enddo ; enddo
-      field_out(i,j) = ave / (total_weight + eps_area)  ! Eps_area avoids division by 0.
+      field_out(i,j) = square_sum(wtd_field(1:dL,1:dL), dL, naive) / &
+                      (square_sum(wt(1:dL,1:dL), dL, naive) + eps_area) ! Eps_area avoids division by 0.
     enddo ; enddo
   elseif (method == SSP) then    ! e.g., T_dfxy_cont_tendency_2d
     do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      do jj=j0,j0+dl-1 ; do ii=i0,i0+dl-1
-        weight = mask(ii,jj)
-        ave = ave+field_in(ii,jj)*weight
+      do j_dn=1,dL ; do i_dn=1,dL
+        jj = j_dn + (dL*j + j0_off) ; ii = i_dn + (dL*i + i0_off)
+        wtd_field(i_dn,j_dn) = field_in(ii,jj) * mask(ii,jj)
       enddo ; enddo
-      field_out(i,j) = ave  ! This is a masked sum, and total_weight = 1.
+      field_out(i,j)  = square_sum(wtd_field(1:dL,1:dL), dL, naive) ! This is a masked sum.
     enddo ; enddo
   elseif (method == PSP) then   ! e.g., umo_2d
-    do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      ii=i0
-      do jj=j0,j0+dl-1
-        weight = mask(ii,jj)
-        ave = ave+field_in(ii,jj)*weight
+    do j=jsv_d,jev_d ; do I=isv_d,iev_d
+      II = dL*I + i0_off + (dL-1)
+      do j_dn=1,dL
+        jj = j_dn + (dL*j + j0_off)
+        wtd_field_1d(j_dn) = field_in(II,jj) * mask(II,jj)
       enddo
-      field_out(i,j) = ave  ! This is a masked sum, and total_weight = 1.
+      field_out(I,j) = sum_1d(wtd_field_1d(1:dL), dL)   ! This is a masked sum.
     enddo ; enddo
   elseif (method == SPP) then   ! e.g., vmo_2d
-    do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      jj=j0
-      do ii=i0,i0+dl-1
-        weight = mask(ii,jj)
-        ave = ave+field_in(ii,jj)*weight
+    do J=jsv_d,jev_d ; do i=isv_d,iev_d
+      JJ = dL*J + J0_off + (dL-1)
+      do i_dn=1,dL
+        ii = i_dn + (dL*i + i0_off)
+        wtd_field_1d(i_dn) = field_in(ii,JJ) * mask(ii,JJ)
       enddo
-      field_out(i,j) = ave  ! This is a masked sum, and total_weight = 1.
+      field_out(i,J) = sum_1d(wtd_field_1d(1:dL), dL)   ! This is a masked sum.
     enddo ; enddo
   elseif (method == PMP) then
-    do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      total_weight = 0.0
-      ii=i0
-      do jj=j0,j0+dl-1
-        weight = mask(ii,jj) * diag_cs%G%dyCu(ii,jj)!*diag_cs%h(ii,jj,1) !Niki?
-        total_weight = total_weight + weight
-        ave = ave+field_in(ii,jj) * weight
+    do j=jsv_d,jev_d ; do I=isv_d,iev_d
+      ! This expression for ii agrees with what was here before, but is it what we want?
+      II = dL*I + I0_off + (dL-1)
+      do j_dn=1,dL
+        jj = j_dn + (dL*j + j0_off)
+        ! Should this weight include the total thickness interpolated to velocity points?
+        wt_1d(j_dn) = mask(II,jj) * diag_cs%G%dyCu(II,jj)
+        wtd_field_1d(j_dn) = field_in(II,jj) * wt_1d(j_dn)
       enddo
-      field_out(i,j) = ave / (total_weight + eps_len)  ! Eps_len avoids division by 0.
+      field_out(I,j) = sum_1d(wtd_field_1d(1:dL), dL) / &
+                      (sum_1d(wt_1d(1:dL), dL) + eps_len)  ! Eps_len avoids division by 0.
     enddo ; enddo
   elseif (method == MPP) then
-    do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
-      ave = 0.0
-      total_weight = 0.0
-      jj=j0
-      do ii=i0,i0+dl-1
-        weight = mask(ii,jj)* diag_cs%G%dxCv(ii,jj)!*diag_cs%h(ii,jj,1) !Niki?
-        total_weight = total_weight +weight
-        ave = ave+field_in(ii,jj)*weight
+    do J=jsv_d,jev_d ; do i=isv_d,iev_d
+      JJ = dL*J + J0_off + (dL-1)
+      do i_dn=1,dL
+        ii = i_dn + (dL*i + i0_off)
+        ! Should this weight include the total thickness interpolated to velocity points?
+        wt_1d(i_dn) = mask(ii,JJ) * diag_cs%G%dxCv(ii,JJ)
+        wtd_field_1d(i_dn) = field_in(ii,JJ) * wt_1d(i_dn)
       enddo
-      field_out(i,j) = ave / (total_weight + eps_len)  ! Eps_len avoids division by 0.
+      field_out(i,J) = sum_1d(wtd_field_1d(1:dL), dL) / &
+                      (sum_1d(wt_1d(1:dL), dL) + Eps_len)  ! Eps_len avoids division by 0.
     enddo ; enddo
   elseif (method == MSK) then ! The input field is a mask, so subsample it instead of averaging.
     field_out(:,:) = 0.0
     do j=jsv_d,jev_d ; do i=isv_d,iev_d
-      i0 = isv_o+dl*(i-isv_d)
-      j0 = jsv_o+dl*(j-jsv_d)
       ave = 0.0
-      do jj=j0,j0+dl-1 ; do ii=i0,i0+dl-1
-        ave = ave+field_in(ii,jj)
+      do j_dn=1,dL ; do i_dn=1,dL
+        jj = j_dn + (dL*j + j0_off) ; ii = i_dn + (dL*i + i0_off)
+        ave = ave + field_in(ii,jj)
       enddo ; enddo
-      if (ave > 0.0) field_out(i,j)=1.0
+      if (ave > 0.0) field_out(i,j) = 1.0
     enddo ; enddo
   else
     write (mesg,*) " unknown sampling method: ",method
@@ -4798,6 +4875,65 @@ subroutine downsample_field_2d(field_in, field_out, dl, method, mask, diag_cs, d
   endif
 
 end subroutine downsample_field_2d
+
+!> Do a rotationally symmetric sum of the elements of a 1-d array.
+function sum_1d(field, sz) result(sum)
+  integer, intent(in) :: sz        !<  The size of the array to sum
+  real,    intent(in) :: field(sz) !< The field to sum in arbitrary units [A ~> a]
+  real :: sum !< The rotationally symmetric sum of the entries in field [A ~> a]
+
+  ! Local variables
+  integer :: i, sz_2
+
+  if (sz == 2) then      ! The order of arithmetic does not matter.
+    sum = field(1) + field(2)
+  elseif (sz == 3) then  ! Use simpler code that has the same order of sums as the general case.
+    sum = field(2) + (field(1) + field(3))
+  else
+    ! This is a copy of the general code from symmetric_sum_1d in MOM_array_transform
+    sz_2 = sz / 2 ! Note that for an odd number sz_2 is rounded down.
+    sum = 0.0
+    if (2*sz_2 < sz) sum = field(sz_2+1)
+    ! Add pairs of values, working from the inside out.
+    do i=sz_2,1,-1
+      sum = sum + (field(i) + field(sz+1-i))
+    enddo
+  endif
+end function sum_1d
+
+!> Return the sum of the elements of a square 2-d array, perhaps using a rotationally symmetric sum.
+!! This could eventually wrap symmetric_sum, but for now it also can reproduce the previous answers.
+function square_sum(field, sz, naive_sum) result(sum)
+  integer,           intent(in) :: sz         !< The size of the array along each axis
+  real,              intent(in) :: field(sz, sz) !< The field to sum in arbitrary units [A ~> a]
+  logical, optional, intent(in) :: naive_sum !< If true, sum the elements in the order they appear in memory.
+  real :: sum !< The sum of the entries in field [A ~> a]
+
+  ! Local variables
+  integer :: i, j
+  logical :: simple_sum
+
+  simple_sum = .true. ; if (present(naive_sum)) simple_sum = naive_sum
+
+  if (sz == 1) then
+    sum = field(1,1)
+  elseif (simple_sum) then
+    ! This non-rotationally symmetric sum is here to reproduce previous results.
+    sum = 0.0
+    do j=1,sz ; do i=1,sz ; sum = sum + field(i,j) ; enddo ; enddo
+  elseif (sz == 2) then
+    ! This copy of code from symmetric_sum may facilitate inlining in a common case.
+    sum = (field(1,1) + field(2,2)) + (field(2,1) + field(1,2))
+  elseif (sz == 3) then
+    ! This copy of code from symmetric_sum may facilitate inlining in a common case.
+    sum = (field(2,2) + ((field(1,2) + field(3,2)) + (field(2,1) + field(2,3)))) + &
+          ((field(1,1) + field(3,3)) + (field(3,1) + field(1,3)))
+  else
+    sum = symmetric_sum(field(1:sz,1:sz))
+  endif
+
+end function square_sum
+
 
 !> Allocate and compute the 2d down sampled mask
 !! The masks are down sampled based on a minority rule, i.e., a coarse cell is open (1)
